@@ -133,6 +133,9 @@ dialog#dlg::backdrop{background:rgba(10,20,26,.55)}
 textarea{width:100%;font:inherit;font-size:13.5px;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--surface-2);color:var(--ink);font-variant-numeric:tabular-nums;direction:ltr;text-align:left}
 [dir=rtl] .kpis b,[dir=rtl] dl.kv dd,[dir=rtl] table.cmp td:not(:first-child):not(.na),[dir=rtl] .ro,[dir=rtl] .profile-box .cap span{direction:ltr;unicode-bidi:isolate}
 [dir=rtl] dl.kv dd,[dir=rtl] table.cmp td:not(:first-child):not(.na){text-align:left}
+.f.miss{outline:2px solid var(--bad);outline-offset:2px;border-radius:4px} input.miss{border-color:var(--bad);border-width:2px}
+input:disabled,select:disabled{opacity:.55;cursor:not-allowed}
+.lockn{background:var(--surface-2);border-radius:6px;padding:6px 8px}
 @media (max-width: 1150px){ .detail{grid-template-columns:1fr 1fr} }
 @media (max-width: 900px){
   .layout{grid-template-columns:1fr}
@@ -238,10 +241,26 @@ function makeDefaults(){
     meLife:15, elecLife:20, pipeLife:50, civilLife:40,
     pumpA:900, pumpB:0.7, msFactor:1.15, elecBase:25000, elecPerKW:150, surgeCost:12000, landCost:8000,
     period:25, discount:6, contingency:10, engineering:8,
-    lang:'en', extremaMin:5, profile:null, extraStatic:5, minRun:200, boosterKm:'', avCost:2500, woCost:2000
+    lang:'en', extremaMin:5, flowReverse:0, layout:'auto', startHead:3, pmaxUser:0, prvBase:6000, prvPerMm:40, profile:null, extraStatic:5, minRun:200, boosterKm:'', avCost:2500, woCost:2000,
+    hlMax:10, stCost:'detailed', lsCapex:120000, lsPerKW:200, lsMEshare:40, lsOM:6000, lsEff:70,
+    priceSrc:{pipe:'default', valves:'default', station:'default', lump:'default', civil:'default', om:'default', energy:'mine', finance:'mine'},
+    inc:{standby:true, surge:true, tank:true, road:true, grid:true, rock:true, land:true, valves:true, aux:true, renew:true, resid:true, markup:true},
+    missing:[]
   };
 }
 
+const PRICE_GROUPS={"energy": ["tariff", "tariffEsc"], "lump": ["lsCapex", "lsPerKW", "lsMEshare", "lsOM", "lsEff"], "station": ["pumpA", "pumpB", "msFactor", "elecBase", "elecPerKW", "surgeCost"], "civil": ["site.src.civil", "site.bst.civil", "rockRate", "roadRate", "gridRate", "gridFixed", "tankRate", "landCost"], "valves": ["avCost", "woCost", "prvBase", "prvPerMm"], "om": ["stationOM", "meMaint", "pipeMaint", "civilMaint", "omEsc", "meLife", "elecLife"], "finance": ["discount", "contingency", "engineering", "pipeLife", "civilLife"], "pipe": ["prices"]};
+const LIMIT_CODES={"DI_PN16": "DI PN16", "DI_PN25": "DI PN25", "DI_PN40": "DI PN40", "PE_PN10": "HDPE PN10", "PE_PN16": "HDPE PN16", "PE_PN20": "HDPE PN20", "PE_PN25": "HDPE PN25", "GRP_PN10": "GRP PN10", "GRP_PN16": "GRP PN16", "GRP_PN25": "GRP PN25", "ST_PN40": "Steel PN40"};
+
+// Inputs the model actually uses: any price group set to "default" takes the built-in Oman values
+function effInputs(S){
+  const d=makeDefaults(), o=JSON.parse(JSON.stringify(S)), src=S.priceSrc||{};
+  const gp=(x,p)=>p.split('.').reduce((a,k)=>a==null?a:a[k],x);
+  const sp=(x,p,v)=>{ const k=p.split('.'); let a=x; for(let i=0;i<k.length-1;i++){ if(a[k[i]]==null) a[k[i]]={}; a=a[k[i]]; } a[k[k.length-1]]=v; };
+  Object.keys(PRICE_GROUPS).forEach(g=>{ if((src[g]||'default')==='default') PRICE_GROUPS[g].forEach(p=>sp(o,p,JSON.parse(JSON.stringify(gp(d,p))))); });
+  o.inc={...d.inc, ...(S.inc||{})};
+  return o;
+}
 const RHO_G = 9.81; // kN/m3 per m head for water ~ rho*g/1000
 const STD_MOTORS = [0.75,1.1,1.5,2.2,3,4,5.5,7.5,11,15,18.5,22,30,37,45,55,75,90,110,132,160,200,250,315,355,400,450,500,560,630,710,800,900,1000,1120,1250,1400,1600,1800,2000,2500,3000];
 const IE3 = [[0.75,80.7],[1.1,82.7],[1.5,84.2],[2.2,85.9],[3,87.1],[4,88.1],[5.5,89.2],[7.5,90.1],[11,91.2],[15,91.9],[18.5,92.4],[22,92.7],[30,93.3],[37,93.7],[45,94.0],[55,94.3],[75,94.7],[90,95.0],[110,95.2],[132,95.4],[160,95.6],[200,95.8]];
@@ -302,6 +321,7 @@ function prepProfile(inp){
   const pts=pr.pts.slice().sort((a,b)=>a[0]-b[0]);
   const x0=pts[0][0]; const P=pts.map(p=>[p[0]-x0,p[1]]);
   const L=P[P.length-1][0]; if(!(L>0)) return null;
+  if(+inp.flowReverse){ const R=P.map(([x,z])=>[L-x,z]).reverse(); P.length=0; R.forEach(p=>P.push(p)); }
   const M=Math.max(200,Math.min(1500,Math.round(L/8)));
   const dx=L/M, xs=[], gs=[]; let j=0;
   for(let i=0;i<=M;i++){ const x=i*dx; while(j<P.length-2 && P[j+1][0]<x) j++;
@@ -401,6 +421,7 @@ function evalConfig(inp, N, DN, fam, tariffMult=1, prof){
   const idMin=Math.min(...famClasses.map(c=>c.idf))*DN/1000, idMax=Math.max(...famClasses.map(c=>c.idf))*DN/1000;
   if(Qs/(Math.PI*idMax*idMax/4) > inp.vmax || Qs/(Math.PI*idMin*idMin/4) < inp.vmin)
     return {feasible:false, velocity:true, reason:{code:'velocity'}, N, DN, fam};
+  if(inp.hlMax>0 && Math.min(...famClasses.map(c=>hwLoss(1000,Qs,c.C,DN/1000*c.idf)))>inp.hlMax) return {feasible:false, velocity:true, reason:{code:'headloss'}, N, DN, fam};
   let secs, posInfo=null;
   if(prof){
     posInfo = stationIdx(inp, prof, N);
@@ -420,43 +441,70 @@ function evalConfig(inp, N, DN, fam, tariffMult=1, prof){
   const minID=Math.min(...allParts.map(p=>DN/1000*p.cls.idf)), maxID=Math.max(...allParts.map(p=>DN/1000*p.cls.idf));
   const vMax=Qs/(Math.PI*minID*minID/4), vMin=Qs/(Math.PI*maxID*maxID/4);
   if(vMax > inp.vmax || vMin < inp.vmin) return {feasible:false, reason:{code:'velocity'}, N, DN, fam, velocity:true};
+  const hlKm=Math.max(...allParts.map(p=>hwLoss(1000,Qs,p.cls.C,DN/1000*p.cls.idf)));
+  if(inp.hlMax>0 && hlKm>inp.hlMax) return {feasible:false, reason:{code:'headloss'}, N, DN, fam, velocity:true};
 
-  const duty=Math.max(1, inp.duty|0), standby=Math.max(0, inp.standby|0), nPumps=duty+standby;
+  const hydSt=secs.map((s,i)=>({TDH:s.TDH, Hs:s.Hs, hf:s.hf, Pd:s.Pd, maxBar:s.maxBar, xKm:s.x0/1000, src:i===0, zg:s.WL}));
+  return costConfig(inp, {DN, fam, prof, secs, allParts, hydSt, prvs:[], posInfo, vMin, vMax,
+    maxBar:Math.max(...secs.map(s=>s.maxBar)), hfTot:secs.reduce((a,s)=>a+s.hf,0), hsTot:secs.reduce((a,s)=>a+s.Hs,0),
+    hgl:secs.flatMap(s=>s.hgl), auto:false, hlKm}, tariffMult);
+}
+
+// Shared costing for both layout methods. c.hydSt = pumping stations, c.prvs = pressure reducing valves
+function costConfig(inp, c, tariffMult){
+  const {DN, fam, prof, allParts, hydSt, prvs} = c;
+  const N=hydSt.length, nPRV=prvs.length, Qs=inp.Q/3600;
+  const inc=inp.inc||{}, on=k=>inc[k]!==false, lump=inp.stCost==='lump';
+  const duty=Math.max(1, inp.duty|0), standby=on('standby')?Math.max(0, inp.standby|0):0, nPumps=duty+standby;
   const Qp=Qs/duty, hoursYr=inp.hours*365;
   const r=inp.risk;
-  let mech=0, elec=0, surge=0, civil=0, grid=0, kWhYr=0, hydKW=0, elecKWtot=0;
-  const stations=secs.map((s,i)=>{
-    const pump=selectPump(inp, Qp, s.TDH);
-    const shaft=RHO_G*Qp*s.TDH/pump.eta, rating=motorRating(shaft*1.15), etaM=motorEff(rating), elecPump=shaft/etaM;
-    const site = i===0 ? inp.site.src : inp.site.bst;
-    const pumpSet = inp.pumpA*Math.pow(rating, inp.pumpB)*(pump.stages>1 ? inp.msFactor : 1);
-    mech += nPumps*pumpSet;
-    elec += inp.elecBase + inp.elecPerKW*nPumps*rating;
-    surge += inp.surgeCost;
-    const tankVol = site.newTank ? inp.Q*inp.tankRetention/60 : 0;
-    civil += (site.civil + tankVol*inp.tankRate)*site.transport + site.rockM3*inp.rockRate + site.roadKm*inp.roadRate + inp.landCost;
-    grid += inp.gridFixed + site.gridKm*inp.gridRate;
-    kWhYr += duty*elecPump*hoursYr + inp.auxKW*24*365;
+  let mech=0, elec=0, surge=0, civil=0, grid=0, kWhYr=0, hydKW=0, elecKWtot=0, lsOMtot=0, extras=0;
+  const stations=hydSt.map(s=>{
+    const site = s.src ? inp.site.src : inp.site.bst;
+    let pump, shaft, rating, etaM, elecPump;
+    if(lump){
+      const eff=Math.max(0.2,Math.min(0.95,inp.lsEff/100)); etaM=0.95;
+      elecPump=RHO_G*Qp*s.TDH/eff; shaft=elecPump*etaM; rating=motorRating(shaft*1.15);
+      pump={eta:eff/etaM, stages:1, nq:inp.rpm*Math.sqrt(Qp)/Math.pow(Math.max(s.TDH,1),0.75), fixed:true};
+      const stCap=inp.lsCapex + inp.lsPerKW*nPumps*rating, me=stCap*Math.max(0,Math.min(100,inp.lsMEshare))/100;
+      mech += me; civil += stCap-me;
+      const ex=(on('rock')?site.rockM3*inp.rockRate:0) + (on('road')?site.roadKm*inp.roadRate:0);
+      civil += ex; extras += ex;
+      const gx=on('grid')?site.gridKm*inp.gridRate:0; grid += gx; extras += gx;
+      lsOMtot += inp.lsOM;
+    } else {
+      pump=selectPump(inp, Qp, s.TDH);
+      shaft=RHO_G*Qp*s.TDH/pump.eta; rating=motorRating(shaft*1.15); etaM=motorEff(rating); elecPump=shaft/etaM;
+      const pumpSet = inp.pumpA*Math.pow(rating, inp.pumpB)*(pump.stages>1 ? inp.msFactor : 1);
+      mech += nPumps*pumpSet;
+      elec += inp.elecBase + inp.elecPerKW*nPumps*rating;
+      if(on('surge')) surge += inp.surgeCost;
+      const tankVol = (site.newTank && on('tank')) ? inp.Q*inp.tankRetention/60 : 0;
+      civil += (site.civil + tankVol*inp.tankRate)*site.transport + (on('rock')?site.rockM3*inp.rockRate:0) + (on('road')?site.roadKm*inp.roadRate:0) + (on('land')?inp.landCost:0);
+      if(on('grid')) grid += inp.gridFixed + site.gridKm*inp.gridRate;
+    }
+    kWhYr += duty*elecPump*hoursYr + (on('aux')?inp.auxKW*24*365:0);
     hydKW += RHO_G*Qs*s.TDH; elecKWtot += duty*elecPump;
-    return {TDH:s.TDH, Hs:s.Hs, hf:s.hf, Pd:s.Pd, maxBar:s.maxBar, xKm:s.x0/1000, pump, shaft, rating, etaM, stationKW:duty*elecPump};
+    return {...s, pump, shaft, rating, etaM, stationKW:duty*elecPump};
   });
   const volYr=inp.Q*hoursYr;
-
   const corrAdder=(fam==='DI'||fam==='STEEL') ? 0.03*(r.corrosion-1) : 0;
   let pipe=0; const classLen={};
   allParts.forEach(p=>{ const price=(inp.prices[DN] && inp.prices[DN][p.cls.id]) || 0; pipe+=p.len*price; classLen[p.cls.name]=(classLen[p.cls.name]||0)+p.len; });
   pipe *= inp.layFactor*(1+corrAdder);
-  const nAV = prof ? prof.nAV : 0, nWO = prof ? prof.nWO : 0;
+  const nAV = prof&&on('valves') ? prof.nAV : 0, nWO = prof&&on('valves') ? prof.nWO : 0;
   const fit = nAV*inp.avCost + nWO*inp.woCost;
-  const direct=pipe+fit+mech+elec+surge+civil+grid;
-  const markup=(1+inp.contingency/100)*(1+inp.engineering/100);
+  const prv = nPRV*(inp.prvBase + inp.prvPerMm*DN);
+  const direct=pipe+fit+prv+mech+elec+surge+civil+grid;
+  const markup=on('markup')?(1+inp.contingency/100)*(1+inp.engineering/100):1;
   const capex=direct*markup;
-  const cap={pipe:pipe*markup, fit:fit*markup, mech:mech*markup, elec:elec*markup, surge:surge*markup, civil:civil*markup, grid:grid*markup};
-
+  const cap={pipe:pipe*markup, fit:fit*markup, prv:prv*markup, mech:mech*markup, elec:elec*markup, surge:surge*markup, civil:civil*markup, grid:grid*markup};
   const riskSt = 1 + 0.12*(r.remote-1) + 0.10*(r.access-1) + 0.08*(r.corrosion-1);
   const riskPipe = 1 + 0.05*(r.remote-1) + 0.10*(r.access-1) + 0.10*(r.corrosion-1);
-  const meCap = cap.mech + cap.elec + cap.surge;
-  const omYr1 = N*inp.stationOM*riskSt + inp.meMaint/100*meCap*riskSt + inp.pipeMaint/100*(cap.pipe+cap.fit)*riskPipe + inp.civilMaint/100*(cap.civil+cap.grid);
+  const meCap = cap.mech + cap.elec + cap.surge + cap.prv;
+  const omYr1 = lump
+    ? lsOMtot + inp.meMaint/100*cap.prv*riskSt + inp.pipeMaint/100*(cap.pipe+cap.fit)*riskPipe + inp.civilMaint/100*extras*markup
+    : N*inp.stationOM*riskSt + inp.meMaint/100*meCap*riskSt + inp.pipeMaint/100*(cap.pipe+cap.fit)*riskPipe + inp.civilMaint/100*(cap.civil+cap.grid);
   const energyYr1 = kWhYr*inp.tariff*tariffMult;
   const meLife = Math.max(3, inp.meLife*(1-0.06*(r.corrosion-1)));
   const elLife = Math.max(3, inp.elecLife*(1-0.04*(r.corrosion-1)));
@@ -466,33 +514,124 @@ function evalConfig(inp, N, DN, fam, tariffMult=1, prof){
     const df=Math.pow(1+dr,-t);
     const e=energyYr1*Math.pow(1+inp.tariffEsc/100,t-1), om=omYr1*Math.pow(1+inp.omEsc/100,t-1);
     let ren=0;
-    if(t<T && t-lastMe>=meLife-1e-9){ ren+=cap.mech*Math.pow(1+inp.omEsc/100,t); lastMe=t; }
-    if(t<T && t-lastEl>=elLife-1e-9){ ren+=cap.elec*Math.pow(1+inp.omEsc/100,t); lastEl=t; }
+    if(on('renew') && t<T && t-lastMe>=meLife-1e-9){ ren+=cap.mech*Math.pow(1+inp.omEsc/100,t); lastMe=t; }
+    if(on('renew') && t<T && t-lastEl>=elLife-1e-9){ ren+=(cap.elec+cap.prv)*Math.pow(1+inp.omEsc/100,t); lastEl=t; }
     pvE+=e*df; pvOM+=om*df; pvRen+=ren*df; pvVol+=volYr*df; nomE+=e; nomOM+=om; nomRen+=ren;
     cum.push(cum[cum.length-1]+e+om+ren);
   }
-  const resid=cap.pipe*Math.max(0,1-T/inp.pipeLife) + cap.fit*Math.max(0,1-T/inp.pipeLife) + (cap.civil+cap.grid)*Math.max(0,1-T/inp.civilLife)
-    + cap.mech*Math.max(0,1-(T-lastMe)/meLife) + cap.elec*Math.max(0,1-(T-lastEl)/elLife);
-  const pvResid=resid*Math.pow(1+dr,-T);
+  const resid=(cap.pipe+cap.fit)*Math.max(0,1-T/inp.pipeLife) + (cap.civil+cap.grid)*Math.max(0,1-T/inp.civilLife)
+    + cap.mech*Math.max(0,1-(T-lastMe)/meLife) + (cap.elec+cap.prv)*Math.max(0,1-(T-lastEl)/elLife);
+  const pvResid=on('resid')?resid*Math.pow(1+dr,-T):0;
   const npv=capex+pvE+pvOM+pvRen-pvResid;
   const TDHs=stations.map(s=>s.TDH), etas=stations.map(s=>s.pump.eta);
+  const mx=a=>a.length?Math.max(...a):0, mn=a=>a.length?Math.min(...a):0;
   const L = prof ? prof.L : inp.Lkm*1000;
   return {
-    feasible:true, N, DN, fam, secs, stations, classLen, profile:!!prof, manualPos: posInfo?posInfo.manual:false,
-    maxBar:Math.max(...secs.map(s=>s.maxBar)), TDHmax:Math.max(...TDHs), TDHmin:Math.min(...TDHs),
-    etaMin:Math.min(...etas), etaMax:Math.max(...etas), ratingMax:Math.max(...stations.map(s=>s.rating)),
-    hfTot:secs.reduce((a,s)=>a+s.hf,0), hsTot:secs.reduce((a,s)=>a+s.Hs,0), Lkm:L/1000,
-    vMin, vMax, duty, standby, nPumps, nAV, nWO,
-    wireToWater:hydKW/elecKWtot, stationKW:elecKWtot, kWhYr, volYr, kWhm3:kWhYr/volYr,
+    feasible:true, N, nPRV, DN, fam, secs:c.secs, stations, prvs, classLen, profile:!!prof, auto:!!c.auto, cap_bar:c.capBar,
+    manualPos: c.posInfo?c.posInfo.manual:false,
+    hgl:c.hgl, markers:{pumps:stations.map(s=>({x:s.xKm,y:s.zg})), prvs:prvs.map(p=>({x:p.xKm,y:p.zg}))},
+    maxBar:c.maxBar, TDHmax:mx(TDHs), TDHmin:mn(TDHs), etaMin:mn(etas), etaMax:mx(etas), ratingMax:mx(stations.map(s=>s.rating)),
+    hfTot:c.hfTot, hsTot:c.hsTot, Lkm:L/1000, hlKm:c.hlKm, lump,
+    vMin:c.vMin, vMax:c.vMax, duty, standby, nPumps, nAV, nWO,
+    wireToWater:elecKWtot>0?hydKW/elecKWtot:0, stationKW:elecKWtot, kWhYr, volYr, kWhm3:kWhYr/volYr,
     capex, cap, omYr1, energyYr1, meLife, elLife,
     pvE, pvOM, pvRen, pvResid, npv, nomE, nomOM, nomRen, nominal:capex+nomE+nomOM+nomRen, lcc:npv/pvVol, cum
   };
+}
+
+// ---------- Automatic layout of pumps and PRVs along a ground profile ----------
+// Works in friction-adjusted head h = HGL + cumulative friction, which stays constant along a pipe with no pumps or PRVs.
+// Pumps raise h, PRVs lower h. Pressure must stay between the residual head and the pressure cap at every point.
+function evalAuto(inp, prof, DN, fam, capBar, tariffMult=1){
+  const famClasses = inp.classes.filter(c=>c.fam===fam).sort((a,b)=>a.limit-b.limit);
+  if(!famClasses.length) return null;
+  const Qs=inp.Q/3600, M=prof.M, dx=prof.dx, gs=prof.gs, xs=prof.xs;
+  const f=1+inp.surgePct/100, minor=1+inp.minorPct/100;
+  const idMin=Math.min(...famClasses.map(c=>c.idf))*DN/1000, idMax=Math.max(...famClasses.map(c=>c.idf))*DN/1000;
+  if(Qs/(Math.PI*idMax*idMax/4) > inp.vmax || Qs/(Math.PI*idMin*idMin/4) < inp.vmin) return {feasible:false, velocity:true, reason:{code:'velocity'}, DN, fam};
+  if(inp.hlMax>0 && Math.min(...famClasses.map(c=>hwLoss(1000,Qs,c.C,DN/1000*c.idf)))>inp.hlMax) return {feasible:false, velocity:true, reason:{code:'headloss'}, DN, fam};
+  const capHead=capBar/f/0.0981, Pmin=inp.residual, H0=gs[0]+(inp.startHead||0);
+  const endReq=gs[M]+inp.extraStatic+Pmin;
+  if(capHead < Pmin+1) return {feasible:false, reason:{code:'auto'}, DN, fam};
+  const lpm=famClasses.map(c=>hwLoss(1,Qs,c.C,DN/1000*c.idf)*minor);
+  const maxPumps=Math.max(0,Math.min(8,inp.nmax|0));
+  let cls=new Array(M).fill(0), out=null;
+  for(let it=0; it<4; it++){
+    const F=[0]; for(let j=0;j<M;j++) F.push(F[j]+lpm[cls[j]]*dx);
+    const Lf=i=>(i===M?endReq:gs[i]+Pmin)+F[i], Uf=i=>Math.max(gs[i]+capHead, i===M?endReq:-1e9)+F[i];
+    // fewest segments: extend each constant-h stretch as far as the pressure window allows
+    const segs=[]; let a=0;
+    while(a<=M){ let lo=-Infinity, hi=Infinity, j=a;
+      while(j<=M){ const nl=Math.max(lo,Lf(j)), nh=Math.min(hi,Uf(j)); if(nl>nh+1e-9) break; lo=nl; hi=nh; j++; }
+      if(j===a) return {feasible:false, reason:{code:'auto'}, DN, fam};
+      segs.push({a, b:j-1, lo, hi}); a=j; }
+    // each segment keeps h as close as possible to the previous one: least pumping, least head thrown away
+    let h=H0; const ctrl=[]; const hn=new Array(M+1);
+    segs.forEach(s=>{ const nh=Math.min(Math.max(h,s.lo),s.hi);
+      if(nh>h+0.01) ctrl.push({i:s.a, kind:'pump', from:h, to:nh}); else if(nh<h-0.01) ctrl.push({i:s.a, kind:'prv', from:h, to:nh});
+      h=nh; for(let k=s.a;k<=s.b;k++) hn[k]=h; });
+    const pumps=ctrl.filter(c=>c.kind==='pump').length;
+    if(pumps>maxPumps) return {feasible:false, reason:{code:'auto'}, DN, fam};
+    if(ctrl.filter(c=>c.kind==='prv').length>12) return {feasible:false, reason:{code:'auto'}, DN, fam};
+    // pipe class for every step from the actual pressure
+    const need=[]; let maxBar=0;
+    for(let j=0;j<M;j++){ const p0=hn[j]-F[j]-gs[j], p1=hn[j]-F[j+1]-gs[j+1]; const bar=Math.max(p0,p1)*f*0.0981; if(bar>maxBar) maxBar=bar;
+      const ci=famClasses.findIndex(c=>c.limit>=bar-1e-6); need.push(ci<0?famClasses.length-1:ci); }
+    let nc=need.slice();
+    if(!inp.telescoping){ const mx=Math.max(...need); nc=need.map(()=>mx); }
+    else { const minSteps=Math.max(1,Math.round((inp.minRun||0)/dx));
+      for(let pass=0; pass<20; pass++){
+        const runs=[]; let s=0; for(let j=1;j<=M;j++) if(j===M||nc[j]!==nc[s]){ runs.push([s,j,nc[s]]); s=j; }
+        let changed=false;
+        for(let q=0;q<runs.length;q++){ const [ra,rb,rc]=runs[q]; if(rb-ra>=minSteps||runs.length===1) continue;
+          const l=q>0?runs[q-1][2]:-1, rr=q<runs.length-1?runs[q+1][2]:-1; const cand=[l,rr].filter(v=>v>rc); if(!cand.length) continue;
+          const to=Math.min(...cand); for(let j=ra;j<rb;j++) nc[j]=to; changed=true; break; }
+        if(!changed) break; } }
+    cls=nc; out={F,ctrl,hn,maxBar};
+  }
+  const {F,ctrl,hn,maxBar}=out;
+  const parts=[];
+  for(let j=0;j<M;j++){ const c=famClasses[cls[j]];
+    if(parts.length && parts[parts.length-1].cls===c){ parts[parts.length-1].len+=dx; parts[parts.length-1].x1=xs[j+1]; } else parts.push({cls:c,len:dx,x0:xs[j],x1:xs[j+1]}); }
+  const minID=Math.min(...parts.map(p=>DN/1000*p.cls.idf)), maxID=Math.max(...parts.map(p=>DN/1000*p.cls.idf));
+  const vMax=Qs/(Math.PI*minID*minID/4), vMin=Qs/(Math.PI*maxID*maxID/4);
+  if(vMax > inp.vmax || vMin < inp.vmin) return {feasible:false, velocity:true, reason:{code:'velocity'}, DN, fam};
+  const hlKm=Math.max(...parts.map(p=>hwLoss(1000,Qs,p.cls.C,DN/1000*p.cls.idf)));
+  if(inp.hlMax>0 && hlKm>inp.hlMax) return {feasible:false, velocity:true, reason:{code:'headloss'}, DN, fam};
+  // grade line with vertical jumps at pumps and PRVs
+  const hgl=[[xs[0], H0]]; const ci=new Set(ctrl.map(c=>c.i)); const step=Math.max(1,Math.round(M/300));
+  for(let k=0;k<=M;k++){ if(ci.has(k)){ const c=ctrl.find(c=>c.i===k); hgl.push([xs[k], c.from-F[k]]); hgl.push([xs[k], c.to-F[k]]); }
+    else if(k%step===0||k===M) hgl.push([xs[k], hn[k]-F[k]]); }
+  const hydSt=[], prvs=[];
+  ctrl.forEach(c=>{ const g=gs[c.i], pin=c.from-F[c.i]-g, pout=c.to-F[c.i]-g;
+    if(c.kind==='pump') hydSt.push({TDH:(c.to-c.from)+inp.stationLoss, Hs:c.to-c.from, hf:0, Pd:pout, Pin:pin, maxBar:pout*f*0.0981, xKm:xs[c.i]/1000, src:c.i===0, zg:g});
+    else prvs.push({xKm:xs[c.i]/1000, zg:g, Pin:pin, Pout:pout, drop:c.from-c.to}); });
+  return costConfig(inp, {DN, fam, prof, secs:[{parts, hgl:[]}], allParts:parts, hydSt, prvs, posInfo:null, vMin, vMax, maxBar,
+    hfTot:F[M], hsTot:gs[M]+inp.extraStatic-gs[0], hgl, auto:true, capBar, hlKm}, tariffMult);
+}
+
+function runAuto(inp, prof, tariffMult){
+  const fams=Object.keys(FAMILIES).filter(f=>inp.families[f]); const all=[]; const reasons=[];
+  DN_LIST.forEach(dn=>fams.forEach(fam=>{
+    let caps=[...new Set(inp.classes.filter(c=>c.fam===fam).map(c=>c.limit))].sort((a,b)=>a-b);
+    if(inp.pmaxUser>0){ const u=+inp.pmaxUser; caps=caps.filter(c=>c<=u); if(!caps.length) return; }
+    caps.forEach(cb=>{ const r=evalAuto(inp, prof, dn, fam, cb, tariffMult); if(!r) return; if(r.feasible) all.push(r); else reasons.push(r); });
+  }));
+  const Ns=[...new Set(all.map(r=>r.N))].sort((a,b)=>a-b); const byN=[];
+  Ns.forEach(N=>{ const list=all.filter(r=>r.N===N); const grid={}; let best=null;
+    list.forEach(r=>{ if(!grid[r.DN]||r.npv<grid[r.DN].npv) grid[r.DN]=r; if(!best||r.npv<best.npv) best=r; });
+    byN.push({N, best, grid, reason:null, all:list}); });
+  if(!byN.length) byN.push({N:1, best:null, grid:{}, all:[], reason: !fams.length?{code:'nomat'}:(reasons.some(r=>!r.velocity)?{code:'auto'}:{code:'velocity'})});
+  const feas=byN.filter(x=>x.best);
+  const overall=feas.length?feas.reduce((a,b)=>b.best.npv<a.best.npv?b:a).best:null;
+  return {byN, overall, prof, auto:true};
 }
 
 function runModel(inp, tariffMult=1){
   const fams = Object.keys(FAMILIES).filter(f=>inp.families[f]);
   const byN = [];
   const prof = prepProfile(inp);
+  if(prof && inp.layout!=='equal') return runAuto(inp, prof, tariffMult);
   for(let N=1; N<=Math.max(1,Math.min(6,inp.nmax|0)); N++){
     const grid = {}; let best=null; const reasons=[]; const all=[];
     DN_LIST.forEach(dn=>{
@@ -521,21 +660,38 @@ function runModel(inp, tariffMult=1){
 // Energy is linear in tariff, so sensitivity re-optimises from the stored options without re-running hydraulics
 function tariffSensitivity(R, mults){
   return mults.map(m=>{ const perN=R.byN.map(x=>{ let b=null; x.all.forEach(o=>{ const v=o.npv+(m-1)*o.pvE; if(b===null||v<b) b=v; }); return b; });
-    let w=null; perN.forEach((v,i)=>{ if(v!=null && (w===null || v<perN[w])) w=i; }); return {perN, winner: w===null?null:w+1}; });
+    let w=null; perN.forEach((v,i)=>{ if(v!=null && (w===null || v<perN[w])) w=i; }); return {perN, winner: w===null?null:R.byN[w].N}; });
 }
 
 </script>
 <script>
 // ===== TEXT: English / Arabic =====
-const stEn = n => `${n} station${n>1?'s':''}`;
-const stAr = n => n===1 ? 'محطة واحدة' : n===2 ? 'محطتان' : `${n} محطات`;
+const stEn = n => n===0 ? 'Gravity only' : `${n} station${n>1?'s':''}`;
+const prvEn = n => `${n} PRV${n>1?'s':''}`;
+const prvAr = n => n===1 ? 'صمام تخفيض ضغط' : n===2 ? 'صماما تخفيض ضغط' : `${n} صمامات تخفيض ضغط`;
+const stAr = n => n===0 ? 'بالجاذبية فقط' : n===1 ? 'محطة واحدة' : n===2 ? 'محطتان' : `${n} محطات`;
 const I18N = {
 en:{
   dir:'ltr', title:'Pumping main optimiser',
+  pr:{intro:'Choose how station costs are worked out and where each group of prices comes from. Groups on "Default (Oman)" use the built-in planning figures and their fields are locked; switch a group to "My values" to type your own or import them from Excel.',
+      srcHead:['Price group','Values used'], srcOpts:[['default','Default (Oman)'],['mine','My values']],
+      grp:{pipe:'Pipe supply and lay prices', valves:'Air valves, washouts and PRVs', station:'Pump station items (detailed)', lump:'Pump station lump sum', civil:'Civil works and power supply', om:'Operation, maintenance and asset life', energy:'Electricity tariff', finance:'Financial rates'},
+      xlT:'Prices from Excel', xlNote:'Send the template to your project engineers, then import the filled file. Empty cells are reported so you can choose what to do with them.',
+      btnTpl:'Download Excel template', btnImp:'Import prices from Excel',
+      banner:g=>`Using the default values for ${g}. Switch this group to "My values" under Price data to edit.`, unlock:'Use my values',
+      lumpSite:'With the lump-sum method only rock cutting, access road and power line length are added on top of each station lump sum.',
+      notUsed:'Not used with the lump-sum method.',
+      impT:'Prices imported', impFound:n=>`${n} values were read from the file.`, impMiss:n=>`${n} values are empty in the file:`, impMore:n=>`and ${n} more`,
+      impPipe:n=>`${n} pipe prices (size and class combinations)`,
+      impAsk:'What should the tool use for the empty ones?', impDef:'Use the default values', impSelf:'I will fill them in myself',
+      impNone:'No price codes were found. Use the file from "Download Excel template" and keep the Code column and sheet names unchanged.',
+      impErr:'This file could not be read. Save it as .xlsx and try again.', impDone:'Prices imported and applied.', missNote:'Highlighted fields were empty in your Excel file.',
+      dlFail:'The download was not completed.'},
+  tip:{dist:x=>`Distance: ${x} km`, p:(m,b)=>`Pressure: ${m} m (${b} bar)`, pipe:(n,z)=>`Pipe: ${n}, elevation ${z} m`},
   intro:'Compare one pumping station against several boosters for the same lift. Every option is sized, priced and run over its life so you can see CAPEX, OPEX and present value side by side.',
   reset:'Reset to Oman defaults', other:'العربية', help:'What is this?',
   st:stEn,
-  sec:{route:'Route and demand', profile:'Ground profile', terrain:'Terrain and pipe material', hyd:'Hydraulic limits', classes:'Pipe pressure classes and prices', pumps:'Pumps and electricity', site:'Station sites and civil works', risk:'Operation and maintenance risk', equip:'Equipment prices', fin:'Financial'},
+  sec:{route:'Route and demand', prices:'Price data and cost method', include:'Include in the comparison', profile:'Ground profile', terrain:'Terrain and pipe material', hyd:'Hydraulic limits', classes:'Pipe pressure classes and prices', pumps:'Pumps and electricity', site:'Station sites and civil works', risk:'Operation and maintenance risk', equip:'Equipment prices', fin:'Financial'},
   fromProfile:'From the ground profile',
   terrains:{mountain_wadi:'Steep mountain with wadis', rural_hills:'Rural hills, low washout risk', flat_gravel:'Flat desert or gravel plain', urban:'Urban, along roads', coastal:'Coastal or sabkha (corrosive soil)', custom:'Custom'},
   fam:{DI:'Ductile iron', HDPE:'HDPE PE100', GRP:'GRP', STEEL:'Steel (welded, lined)'},
@@ -573,11 +729,17 @@ en:{
   trPartial:px=>`Line found across ${px} pixels (shown in blue, slightly below the original). Now enter the total distance and the lowest and highest elevation.`,
   trOk:(a,b,dx,dy)=>`Line found. Start ${a} m, end ${b} m. Each pixel is about ${dx} m along the route and ${dy} m in height, so expect that much uncertainty.`,
   // results
-  reason:r=>({pressure:`Pressure ${r.bar?r.bar.toFixed(1):''} bar exceeds the strongest ${I18N.en.fam[r.fam]||''} class`, velocity:'No diameter meets the velocity limits', overlap:'Booster positions overlap; check the chainages', nomat:'No pipe material selected'})[r.code],
+  reason:r=>({pressure:`Pressure ${r.bar?r.bar.toFixed(1):''} bar exceeds the strongest ${I18N.en.fam[r.fam]||''} class`, velocity:'No diameter meets the velocity limits', headloss:'No diameter meets the velocity and head loss limits', overlap:'Booster positions overlap; check the chainages', auto:'No layout keeps the pressure within your limits with the allowed number of pumps. Allow more pumps, a stronger pipe class or a larger pressure limit', nomat:'No pipe material selected'})[r.code],
   noneTitle:'No option meets your limits',
   noneText:'Every combination of stations, diameter and pipe class breaks a pressure or velocity limit. Try a stronger class (for example steel), raise a class limit, widen the velocity range, or compare more stations.',
   whyFailed:'Why each option failed',
-  verdict:(n,dn,mat)=>`${stEn(n)}, DN${dn} ${mat.toLowerCase()}`,
+  verdict:(n,dn,mat,p)=>`${stEn(n)}${p?` + ${prvEn(p)}`:''}, DN${dn} ${mat.toLowerCase()}`, prv:prvEn,
+  ctrlT:'Pumps and pressure reducing valves',
+  ctrlNote:'Placed by the tool along your profile, in the flow direction. Pressures are working pressure head, before the surge allowance.',
+  ctrlHead:['Item','Chainage km','Ground m','Pressure in m','Pressure out m','Head added or removed m','Pump η','Motors'],
+  itemPump:'Pump at start', itemBooster:i=>`Booster ${i}`, itemPrv:i=>`PRV ${i}`,
+  cavWarn:'⚠ Inlet more than 3 times outlet pressure: risk of cavitation. Consider two PRVs in series or a break pressure tank.',
+  capNote:b=>`Pipe classes up to ${b} bar allowed in this option.`,
   profPrefix:'Pressures follow your ground profile. ',
   lowest:(T,npv,lcc,c)=>`Lowest ${T}-year present cost at ${npv}, or ${lcc} ${c} per m³ pumped.`,
   nextBest:(n,d,p)=>` The next best, ${stEn(n)}, costs ${d} more (+${p}%).`,
@@ -599,18 +761,20 @@ en:{
       sets:['CAPEX','Energy','O&M','Renewals','Residual value'],
       pvAxis:c=>`Present value (${c})`, dnAxis:'Nominal pipe size (mm)', costAxis:c=>`Present cost (${c})`, year:'Year', cumAxis:c=>`Cumulative spend (${c})`, tarAxis:c=>`Electricity tariff (${c}/kWh)`,
       dist:'Distance along the main (km)', lvlProf:'Ground and grade level (m)', lvl:'Level above source (m)',
-      hgl:'Hydraulic grade line', station:'Pumping station', av:'Air valve (high point)', wo:'Washout (low point)', removed:'Removed valve (click to restore)', ground:'Ground',
+      hgl:'Hydraulic grade line', station:'Pumping station', prvM:'Pressure reducing valve', av:'Air valve (high point)', wo:'Washout (low point)', removed:'Removed valve (click to restore)', ground:'Ground',
       tip:(l,y,x)=>`${l}: ${y} m at ${x} km`},
   bdTitle:(n,dn,mat)=>`Breakdown, ${stEn(n)}, DN${dn} ${mat}`,
   bdNote:(c,e)=>`CAPEX lines include ${c}% contingency and ${e}% design and supervision.`,
-  capT:'CAPEX', cap:{pipe:'Pipeline', fit:'Air valves and washouts', mech:'Pumps and motors', elec:'Electrical and controls', surge:'Surge protection', civil:'Civil works, tanks, roads', grid:'Power supply', total:'Total CAPEX'},
+  capT:'CAPEX', cap:{pipe:'Pipeline', fit:'Air valves and washouts', prv:'Pressure reducing valves', mech:'Pumps and motors', elec:'Electrical and controls', surge:'Surge protection', civil:'Civil works, tanks, roads', grid:'Power supply', total:'Total CAPEX'},
   lccT:'Life-cycle cost', lcc:['Energy, year 1','O&M, year 1','Energy, present value','O&M, present value','Equipment renewals, PV','Residual value, PV','Present cost'],
-  ppT:'Pumps and pipe', pp:{flow:'Flow per pump', w2w:'Wire-to-water efficiency', kw:'Power drawn, all stations', kwh:'Energy per year', hs:'Static lift, total', hf:'Friction loss, total', v:'Velocity', valves:'Air valves / washouts', ren:'Pump and motor renewal', every:n=>`every ${n} yrs`},
+  ppT:'Pumps and pipe', pp:{flow:'Flow per pump', w2w:'Wire-to-water efficiency', kw:'Power drawn, all stations', kwh:'Energy per year', hs:'Static lift, total', hf:'Friction loss, total', v:'Velocity', hl:'Head loss, pipe friction', valves:'Air valves / washouts', ren:'Pump and motor renewal', every:n=>`every ${n} yrs`},
   stT:'Stations', stManual:'Boosters at the chainages you entered.', stAuto:'Each booster sits where the ground reaches an equal share of the total lift. Enter your own chainages under Ground profile to move them.', stEqual:'Lift and length are split equally between stations.',
   stHead:['Station','Chainage km','Static lift m','Friction m','Pump head m','Highest design bar','Pump η','Stages','nq per stage','Motor η','Motors','Power drawn kW'],
   atSource:'At source', booster:i=>`Booster ${i}`,
   howT:'How the numbers are built',
-  how:{prof:'Pressure is the hydraulic grade line minus the ground level at each point of your profile. Each pump is sized so the grade line stays at least the residual head above every high point and the delivery level. Surge allowance is then added before the pipe class is chosen, and class runs shorter than your minimum length are merged into the neighbouring class.',
+  how:{lump:'Pump stations use the lump-sum method: one CAPEX per station plus an amount per installed kW, a yearly O&M amount, and one overall pump efficiency for energy.',
+       auto:'In "Optimise pumps and PRVs" mode the tool walks along your profile in the flow direction. For every pipe size and every pressure class, it finds the fewest pumps and pressure reducing valves that keep the pressure between the residual head and the class limit at every point. Each pump adds only the head that is needed, and each PRV removes only what it must, so as little pumped energy as possible is thrown away. The cheapest combination over the analysis period wins. A PRV with a very large pressure drop can cavitate; detailed design may use two PRVs in series or a break pressure tank.',
+       prof:'Pressure is the hydraulic grade line minus the ground level at each point of your profile. Each pump is sized so the grade line stays at least the residual head above every high point and the delivery level. Surge allowance is then added before the pipe class is chosen, and class runs shorter than your minimum length are merged into the neighbouring class.',
        straight:'Static head and pipe length are split equally between stations. Along each section the pressure falls in a straight line from the pump to the next tank; the surge allowance and the wadi low-point allowance are added along the whole section, which is on the safe side. Load a ground profile to replace this with real levels.',
        img:'The profile was traced from an image, so levels are only as precise as one pixel of the picture. Check critical low points against survey data.',
        hw:'Friction uses Hazen–Williams. HDPE sizes are outside diameter and are converted to bore with the ID / size ratio.',
@@ -618,14 +782,29 @@ en:{
        fixed:'Pumps run at fixed speed at one duty point. Motors are IE3 and sized with a 15% margin.',
        pv:(d,T)=>`Present cost discounts energy, O&M and renewals at ${d}% and takes off the remaining value of the assets at year ${T}.`,
        price:'Default prices are rough planning figures for Oman, not tender rates. Replace them with recent BoQ rates before using the results for a decision.'},
-  fig:{static:'Static head', residual:'Residual', hgl:'Grade line', source:'Source', delivery:'Delivery', working:'Working', stop:'Pump stops', limit:'Class limit', pressure:'Pressure', time:'Time', head:'Head', eff:'Efficiency', bep:'Best point', actual:'Actual', flow:'Flow', inlet:'In', outlet:'Out', duty:'Duty', standby:'Standby', pump:'Pump', ignored:'Ignored'}
+  fig:{static:'Static head', residual:'Residual', hgl:'Grade line', source:'Source', delivery:'Delivery', working:'Working', stop:'Pump stops', limit:'Class limit', pressure:'Pressure', time:'Time', head:'Head', eff:'Efficiency', bep:'Best point', actual:'Actual', flow:'Flow', inlet:'In', outlet:'Out', duty:'Duty', standby:'Standby', pump:'Pump', ignored:'Ignored', ridge:'Pump to the ridge', prv:'PRV', reduced:'Pressure kept below the limit'}
 },
 ar:{
   dir:'rtl', title:'أداة تحسين خط الضخ',
+  pr:{intro:'اختر طريقة حساب تكلفة المحطات ومصدر كل مجموعة من الأسعار. المجموعات على "افتراضي (عُمان)" تستخدم الأرقام التخطيطية المضمّنة وتكون حقولها مقفلة، واختر "قيمي" لإدخال أسعارك أو استيرادها من Excel.',
+      srcHead:['مجموعة الأسعار','القيم المستخدمة'], srcOpts:[['default','افتراضي (عُمان)'],['mine','قيمي']],
+      grp:{pipe:'أسعار توريد وتمديد الأنابيب', valves:'صمامات الهواء والتصريف وتخفيض الضغط', station:'بنود محطة الضخ (تفصيلي)', lump:'محطة الضخ بمبلغ إجمالي', civil:'الأعمال المدنية والتغذية الكهربائية', om:'التشغيل والصيانة وأعمار الأصول', energy:'تعرفة الكهرباء', finance:'المعايير المالية'},
+      xlT:'الأسعار من Excel', xlNote:'أرسل النموذج إلى مهندسي المشاريع ثم استورد الملف بعد تعبئته. ستُعرض الخلايا الفارغة لتختار ما تفعله بها.',
+      btnTpl:'تنزيل نموذج Excel', btnImp:'استيراد الأسعار من Excel',
+      banner:g=>`تُستخدم القيم الافتراضية لمجموعة ${g}. اختر "قيمي" لهذه المجموعة في قسم بيانات الأسعار لتعديلها.`, unlock:'استخدام قيمي',
+      lumpSite:'في طريقة المبلغ الإجمالي يُضاف فوق مبلغ كل محطة فقط القطع الصخري وطريق الوصول وطول خط الكهرباء.',
+      notUsed:'لا يُستخدم مع طريقة المبلغ الإجمالي.',
+      impT:'تم استيراد الأسعار', impFound:n=>`تمت قراءة ${n} قيمة من الملف.`, impMiss:n=>`${n} قيمة فارغة في الملف:`, impMore:n=>`و${n} أخرى`,
+      impPipe:n=>`${n} من أسعار الأنابيب (تركيبات المقاس والفئة)`,
+      impAsk:'ماذا تستخدم الأداة للقيم الفارغة؟', impDef:'استخدام القيم الافتراضية', impSelf:'سأدخلها بنفسي',
+      impNone:'لم يتم العثور على رموز الأسعار. استخدم الملف من "تنزيل نموذج Excel" دون تغيير عمود Code وأسماء الأوراق.',
+      impErr:'تعذرت قراءة الملف. احفظه بصيغة xlsx وحاول مرة أخرى.', impDone:'تم استيراد الأسعار وتطبيقها.', missNote:'الحقول المظللة كانت فارغة في ملف Excel.',
+      dlFail:'لم يكتمل التنزيل.'},
+  tip:{dist:x=>`المسافة: ${x} km`, p:(m,b)=>`الضغط: ${m} m (${b} bar)`, pipe:(n,z)=>`الأنبوب: ${n}، المنسوب ${z} m`},
   intro:'قارن بين محطة ضخ واحدة وعدة محطات تقوية لنفس الرفع. يتم تحديد مقاس كل خيار وتسعيره وتشغيله طوال عمره، لترى التكاليف الرأسمالية والتشغيلية والقيمة الحالية جنباً إلى جنب.',
   reset:'استعادة القيم الافتراضية (عُمان)', other:'English', help:'ما هذا؟',
   st:stAr,
-  sec:{route:'المسار والطلب', profile:'المقطع الطولي للأرض', terrain:'طبيعة المنطقة ومادة الأنابيب', hyd:'الحدود الهيدروليكية', classes:'فئات ضغط الأنابيب وأسعارها', pumps:'المضخات والكهرباء', site:'مواقع المحطات والأعمال المدنية', risk:'مخاطر التشغيل والصيانة', equip:'أسعار المعدات', fin:'المعايير المالية'},
+  sec:{route:'المسار والطلب', prices:'بيانات الأسعار وطريقة حساب التكلفة', include:'البنود المشمولة في المقارنة', profile:'المقطع الطولي للأرض', terrain:'طبيعة المنطقة ومادة الأنابيب', hyd:'الحدود الهيدروليكية', classes:'فئات ضغط الأنابيب وأسعارها', pumps:'المضخات والكهرباء', site:'مواقع المحطات والأعمال المدنية', risk:'مخاطر التشغيل والصيانة', equip:'أسعار المعدات', fin:'المعايير المالية'},
   fromProfile:'من المقطع الطولي',
   terrains:{mountain_wadi:'جبلية وعرة مع أودية', rural_hills:'تلال ريفية، خطر جرف منخفض', flat_gravel:'صحراء أو سهل حصوي مستوٍ', urban:'حضرية، بمحاذاة الطرق', coastal:'ساحلية أو سبخة (تربة أكّالة)', custom:'مخصص'},
   fam:{DI:'حديد مرن (DI)', HDPE:'بولي إيثيلين HDPE', GRP:'ألياف زجاجية GRP', STEEL:'فولاذ ملحوم ومبطن'},
@@ -661,11 +840,17 @@ ar:{
   trNotFound:'لم يُعثر على الخط داخل المستطيل. اضغط مرة على الخط لاختيار لونه، أو أعد رسم المستطيل.',
   trPartial:px=>`تم العثور على الخط عبر ${px} بكسل (يظهر بالأزرق أسفل الأصلي بقليل). أدخل الآن المسافة الكلية وأدنى وأعلى منسوب.`,
   trOk:(a,b,dx,dy)=>`تم العثور على الخط. البداية ${a} m والنهاية ${b} m. كل بكسل يعادل نحو ${dx} m على طول المسار و${dy} m في الارتفاع، فتوقع هذا القدر من عدم الدقة.`,
-  reason:r=>({pressure:`الضغط ${r.bar?r.bar.toFixed(1):''} bar يتجاوز أقوى فئة من ${I18N.ar.fam[r.fam]||''}`, velocity:'لا يوجد قطر يحقق حدود السرعة', overlap:'مواقع محطات التقوية متداخلة، راجع المسافات', nomat:'لم يتم اختيار أي مادة أنابيب'})[r.code],
+  reason:r=>({pressure:`الضغط ${r.bar?r.bar.toFixed(1):''} bar يتجاوز أقوى فئة من ${I18N.ar.fam[r.fam]||''}`, velocity:'لا يوجد قطر يحقق حدود السرعة', headloss:'لا يوجد قطر يحقق حدود السرعة وفاقد الضغط', overlap:'مواقع محطات التقوية متداخلة، راجع المسافات', auto:'لا يوجد ترتيب يُبقي الضغط ضمن حدودك بعدد المضخات المسموح. اسمح بعدد أكبر من المضخات أو بفئة أنابيب أقوى أو حد ضغط أعلى', nomat:'لم يتم اختيار أي مادة أنابيب'})[r.code],
   noneTitle:'لا يوجد خيار يحقق حدودك',
   noneText:'كل تركيبة من عدد المحطات والقطر وفئة الأنبوب تتجاوز حد الضغط أو السرعة. جرّب فئة أقوى (مثل الفولاذ)، أو ارفع حد إحدى الفئات، أو وسّع نطاق السرعة، أو قارن عدداً أكبر من المحطات.',
   whyFailed:'سبب رفض كل خيار',
-  verdict:(n,dn,mat)=>`${stAr(n)}، أنبوب DN${dn} ${mat}`,
+  verdict:(n,dn,mat,p)=>`${stAr(n)}${p?` و${prvAr(p)}`:''}، أنبوب DN${dn} ${mat}`, prv:prvAr,
+  ctrlT:'المضخات وصمامات تخفيض الضغط',
+  ctrlNote:'وضعتها الأداة على طول المقطع في اتجاه الجريان. الضغوط هي ضغط التشغيل بالمتر قبل إضافة سماح الطرق المائي.',
+  ctrlHead:['العنصر','المسافة km','منسوب الأرض m','الضغط قبل m','الضغط بعد m','الرفع المضاف أو المخفّض m','كفاءة المضخة','المحركات'],
+  itemPump:'مضخة عند البداية', itemBooster:i=>`تقوية ${i}`, itemPrv:i=>`صمام تخفيض ${i}`,
+  cavWarn:'⚠ ضغط الدخول أكثر من 3 أضعاف ضغط الخروج: خطر التكهف. فكّر في صمامين على التوالي أو خزان كسر ضغط.',
+  capNote:b=>`مسموح في هذا الخيار بفئات أنابيب حتى ${b} bar.`,
   profPrefix:'الضغوط محسوبة من المقطع الطولي الفعلي. ',
   lowest:(T,npv,lcc,c)=>`أقل تكلفة حالية على مدى ${T} سنة: ${npv}، أي ${lcc} ${c} لكل م³ يتم ضخه.`,
   nextBest:(n,d,p)=>` الخيار التالي (${stAr(n)}) أعلى بمقدار ${d} (+${p}%).`,
@@ -687,18 +872,20 @@ ar:{
       sets:['الرأسمالية','الطاقة','التشغيل والصيانة','الاستبدال','القيمة المتبقية'],
       pvAxis:c=>`القيمة الحالية (${c})`, dnAxis:'المقاس الاسمي للأنبوب (mm)', costAxis:c=>`التكلفة الحالية (${c})`, year:'السنة', cumAxis:c=>`الإنفاق التراكمي (${c})`, tarAxis:c=>`تعرفة الكهرباء (${c}/kWh)`,
       dist:'المسافة على طول الخط (km)', lvlProf:'منسوب الأرض وخط الانحدار (m)', lvl:'المنسوب فوق المصدر (m)',
-      hgl:'خط الانحدار الهيدروليكي', station:'محطة ضخ', av:'صمام هواء (نقطة عالية)', wo:'صمام تصريف (نقطة منخفضة)', removed:'صمام محذوف (اضغط لإرجاعه)', ground:'الأرض',
+      hgl:'خط الانحدار الهيدروليكي', station:'محطة ضخ', prvM:'صمام تخفيض الضغط', av:'صمام هواء (نقطة عالية)', wo:'صمام تصريف (نقطة منخفضة)', removed:'صمام محذوف (اضغط لإرجاعه)', ground:'الأرض',
       tip:(l,y,x)=>`${l}: ${y} m عند ${x} km`},
   bdTitle:(n,dn,mat)=>`تفاصيل خيار ${stAr(n)}، DN${dn} ${mat}`,
   bdNote:(c,e)=>`تشمل بنود التكلفة الرأسمالية ${c}% طوارئ و${e}% تصميم وإشراف.`,
-  capT:'التكلفة الرأسمالية', cap:{pipe:'الخط', fit:'صمامات الهواء والتصريف', mech:'المضخات والمحركات', elec:'الكهرباء والتحكم', surge:'الحماية من الطرق المائي', civil:'الأعمال المدنية والخزانات والطرق', grid:'التغذية الكهربائية', total:'إجمالي التكلفة الرأسمالية'},
+  capT:'التكلفة الرأسمالية', cap:{pipe:'الخط', fit:'صمامات الهواء والتصريف', prv:'صمامات تخفيض الضغط', mech:'المضخات والمحركات', elec:'الكهرباء والتحكم', surge:'الحماية من الطرق المائي', civil:'الأعمال المدنية والخزانات والطرق', grid:'التغذية الكهربائية', total:'إجمالي التكلفة الرأسمالية'},
   lccT:'تكلفة دورة الحياة', lcc:['الطاقة، السنة الأولى','التشغيل والصيانة، السنة الأولى','الطاقة، القيمة الحالية','التشغيل والصيانة، القيمة الحالية','استبدال المعدات، القيمة الحالية','القيمة المتبقية، القيمة الحالية','التكلفة الحالية'],
-  ppT:'المضخات والأنبوب', pp:{flow:'التدفق لكل مضخة', w2w:'الكفاءة الكلية (من الكهرباء إلى الماء)', kw:'القدرة المسحوبة لكل المحطات', kwh:'الطاقة السنوية', hs:'الرفع الاستاتيكي الكلي', hf:'فواقد الاحتكاك الكلية', v:'السرعة', valves:'صمامات الهواء / التصريف', ren:'استبدال المضخة والمحرك', every:n=>`كل ${n} سنة`},
+  ppT:'المضخات والأنبوب', pp:{flow:'التدفق لكل مضخة', w2w:'الكفاءة الكلية (من الكهرباء إلى الماء)', kw:'القدرة المسحوبة لكل المحطات', kwh:'الطاقة السنوية', hs:'الرفع الاستاتيكي الكلي', hf:'فواقد الاحتكاك الكلية', v:'السرعة', hl:'فاقد الضغط، احتكاك الأنبوب', valves:'صمامات الهواء / التصريف', ren:'استبدال المضخة والمحرك', every:n=>`كل ${n} سنة`},
   stT:'المحطات', stManual:'محطات التقوية في المواقع التي أدخلتها.', stAuto:'توضع كل محطة تقوية حيث تصل الأرض إلى حصة متساوية من الرفع الكلي. أدخل مواقعك الخاصة في قسم المقطع الطولي لتحريكها.', stEqual:'الرفع والطول مقسّمان بالتساوي بين المحطات.',
   stHead:['المحطة','المسافة km','الرفع الاستاتيكي m','الاحتكاك m','رفع المضخة m','أعلى ضغط تصميمي bar','كفاءة المضخة','المراحل','nq لكل مرحلة','كفاءة المحرك','المحركات','القدرة المسحوبة kW'],
   atSource:'عند المصدر', booster:i=>`تقوية ${i}`,
   howT:'كيف تُحسب الأرقام',
-  how:{prof:'الضغط هو خط الانحدار الهيدروليكي ناقص منسوب الأرض عند كل نقطة من المقطع. تُصمم كل مضخة بحيث يبقى خط الانحدار أعلى من كل نقطة عالية ومن منسوب التسليم بمقدار الضغط المتبقي على الأقل. ثم يُضاف سماح الطرق المائي قبل اختيار فئة الأنبوب، وتُدمج أطوال الفئات الأقصر من الحد الأدنى في الفئة المجاورة.',
+  how:{lump:'تُحسب محطات الضخ بطريقة المبلغ الإجمالي: تكلفة رأسمالية واحدة لكل محطة مع مبلغ لكل kW مركّب، ومبلغ سنوي للتشغيل والصيانة، وكفاءة ضخ كلية واحدة لحساب الطاقة.',
+       auto:'في وضع "تحسين المضخات وصمامات تخفيض الضغط" تمشي الأداة على طول المقطع في اتجاه الجريان. ولكل قطر أنبوب وكل فئة ضغط تجد أقل عدد من المضخات وصمامات تخفيض الضغط يُبقي الضغط بين الضغط المتبقي وحد الفئة عند كل نقطة. كل مضخة تضيف الرفع اللازم فقط، وكل صمام يخفض ما يلزم فقط، فيُهدر أقل قدر ممكن من طاقة الضخ. ويفوز الخيار الأرخص على مدى فترة التحليل. الصمام ذو الانخفاض الكبير جداً في الضغط قد يتعرض للتكهف، وقد يستخدم التصميم التفصيلي صمامين على التوالي أو خزان كسر ضغط.',
+       prof:'الضغط هو خط الانحدار الهيدروليكي ناقص منسوب الأرض عند كل نقطة من المقطع. تُصمم كل مضخة بحيث يبقى خط الانحدار أعلى من كل نقطة عالية ومن منسوب التسليم بمقدار الضغط المتبقي على الأقل. ثم يُضاف سماح الطرق المائي قبل اختيار فئة الأنبوب، وتُدمج أطوال الفئات الأقصر من الحد الأدنى في الفئة المجاورة.',
        straight:'يُقسّم الرفع الاستاتيكي وطول الخط بالتساوي بين المحطات. وعلى طول كل جزء ينخفض الضغط خطياً من المضخة حتى الخزان التالي، ويُضاف سماح الطرق المائي وسماح الأودية على طول الجزء كاملاً، وهذا في جانب الأمان. حمّل مقطعاً طولياً لاستبدال ذلك بالمناسيب الحقيقية.',
        img:'تمت قراءة المقطع من صورة، لذا فدقة المناسيب بحدود بكسل واحد من الصورة. راجع النقاط المنخفضة الحرجة مع بيانات المساحة.',
        hw:'يُحسب الاحتكاك بمعادلة هازن-ويليامز. مقاسات HDPE هي القطر الخارجي وتُحوّل إلى القطر الداخلي بنسبة القطر الداخلي ÷ الاسمي.',
@@ -706,11 +893,41 @@ ar:{
        fixed:'تعمل المضخات بسرعة ثابتة عند نقطة تشغيل واحدة. المحركات من فئة IE3 ومحددة بهامش 15%.',
        pv:(d,T)=>`التكلفة الحالية تخصم تكاليف الطاقة والتشغيل والصيانة والاستبدال بمعدل ${d}% وتطرح القيمة المتبقية للأصول في السنة ${T}.`,
        price:'الأسعار الافتراضية تقديرات تخطيطية تقريبية لسلطنة عُمان وليست أسعار مناقصات. استبدلها بأسعار حديثة من جداول الكميات قبل الاعتماد على النتائج في اتخاذ القرار.'},
-  fig:{static:'الرفع الاستاتيكي', residual:'المتبقي', hgl:'خط الانحدار', source:'المصدر', delivery:'التسليم', working:'التشغيل', stop:'توقف المضخة', limit:'حد الفئة', pressure:'الضغط', time:'الزمن', head:'الرفع', eff:'الكفاءة', bep:'الكفاءة القصوى', actual:'الفعلي', flow:'التدفق', inlet:'دخول', outlet:'خروج', duty:'عاملة', standby:'احتياطية', pump:'المضخة', ignored:'يُتجاهل'}
+  fig:{static:'الرفع الاستاتيكي', residual:'المتبقي', hgl:'خط الانحدار', source:'المصدر', delivery:'التسليم', working:'التشغيل', stop:'توقف المضخة', limit:'حد الفئة', pressure:'الضغط', time:'الزمن', head:'الرفع', eff:'الكفاءة', bep:'الكفاءة القصوى', actual:'الفعلي', flow:'التدفق', inlet:'دخول', outlet:'خروج', duty:'عاملة', standby:'احتياطية', pump:'المضخة', ignored:'يُتجاهل', ridge:'الضخ حتى القمة', prv:'صمام', reduced:'الضغط تحت الحد'}
 }};
 
 // Field labels: [label, unit, short note]  (unit "$" = currency)
 const FL = {
+ 'site.src.civil':{en:['Building and foundations, station at source','$',''], ar:['المبنى والأساسات، محطة المصدر','$','']},
+ 'site.bst.civil':{en:['Building and foundations, each booster','$',''], ar:['المبنى والأساسات، كل محطة تقوية','$','']},
+ hlMax:{en:['Maximum head loss','m/km','0 = no limit'], ar:['أقصى فاقد ضغط','m/km','0 = بدون حد'], hen:'Largest pipe friction loss allowed per kilometre. It keeps pipes from being too small, which wastes energy and raises surge. Long transmission mains are often kept at 2 to 5 m/km; up to about 10 m/km is common for shorter mains. Set 0 to switch the limit off.', har:'أكبر فاقد احتكاك مسموح لكل كيلومتر. يمنع اختيار أنابيب صغيرة جداً تهدر الطاقة وتزيد الطرق المائي. خطوط النقل الطويلة تُحدد غالباً بين 2 و5 m/km، وحتى نحو 10 m/km شائع للخطوط الأقصر. اكتب 0 لإلغاء الحد.'},
+ stCost:{en:['Pump station cost method','',''], ar:['طريقة حساب تكلفة محطة الضخ','',''], hen:'"Detailed items" builds each station from pump sets, electrical, surge protection, building, tank, land, roads and power line. "Lump sum per station" is for when you only know an all-in price: one CAPEX per station (plus an optional amount per kW), a yearly O&M amount and one overall efficiency. Example: CAPEX 50,000, O&M 3,000 per year, efficiency 70%.', har:'"بنود تفصيلية" تبني كل محطة من وحدات الضخ والكهرباء وحماية الطرق المائي والمبنى والخزان والأرض والطرق وخط الكهرباء. أما "مبلغ إجمالي لكل محطة" فهو عندما تعرف سعراً شاملاً فقط: تكلفة رأسمالية واحدة لكل محطة (مع مبلغ اختياري لكل kW)، ومبلغ سنوي للتشغيل والصيانة، وكفاءة كلية واحدة. مثال: 50,000 رأسمالية، و3,000 تشغيل وصيانة سنوياً، وكفاءة 70%.'},
+ lsCapex:{en:['CAPEX per station','$','All-in: pumps, building, electrical, tank'], ar:['التكلفة الرأسمالية لكل محطة','$','شاملة: المضخات والمبنى والكهرباء والخزان']},
+ lsPerKW:{en:['Extra CAPEX per installed kW','$/kW','0 if the lump sum covers all sizes'], ar:['تكلفة إضافية لكل kW مركّب','$/kW','0 إذا كان المبلغ يشمل كل الأحجام'], hen:'Lets bigger stations cost more. Installed kW counts duty and standby motors.', har:'يجعل المحطات الأكبر أعلى تكلفة. القدرة المركبة تشمل المحركات العاملة والاحتياطية.'},
+ lsMEshare:{en:['Pumps and electrical share','%','Replaced at end of pump life'], ar:['حصة المضخات والكهرباء','%','تُستبدل في نهاية عمر المضخة']},
+ lsOM:{en:['O&M per station per year','$','All running costs except electricity'], ar:['التشغيل والصيانة لكل محطة سنوياً','$','كل تكاليف التشغيل عدا الكهرباء']},
+ lsEff:{en:['Overall pump efficiency','%','Wire to water'], ar:['الكفاءة الكلية للضخ','%','من الكهرباء إلى الماء'], hen:'Pump efficiency times motor efficiency. 65 to 75% is typical for a well-chosen pump set.', har:'كفاءة المضخة مضروبة في كفاءة المحرك. من 65 إلى 75% معتاد لوحدة ضخ مختارة جيداً.'},
+ 'inc.standby':{en:['Standby pumps','',''], ar:['المضخات الاحتياطية','','']},
+ 'inc.surge':{en:['Surge protection','',''], ar:['الحماية من الطرق المائي','','']},
+ 'inc.tank':{en:['Break tanks at boosters','',''], ar:['خزانات الكسر في محطات التقوية','','']},
+ 'inc.road':{en:['Access roads','',''], ar:['طرق الوصول','','']},
+ 'inc.grid':{en:['Power line and transformer','',''], ar:['خط الكهرباء والمحول','','']},
+ 'inc.rock':{en:['Rock cutting at stations','',''], ar:['القطع الصخري في المحطات','','']},
+ 'inc.land':{en:['Land and fencing','',''], ar:['الأرض والسور','','']},
+ 'inc.valves':{en:['Air valves and washouts','',''], ar:['صمامات الهواء والتصريف','','']},
+ 'inc.aux':{en:['Station auxiliary electricity','',''], ar:['الكهرباء المساعدة للمحطات','','']},
+ 'inc.renew':{en:['Equipment renewals','',''], ar:['استبدال المعدات','','']},
+ 'inc.resid':{en:['Residual value at the end','',''], ar:['القيمة المتبقية في النهاية','','']},
+ 'inc.markup':{en:['Contingency, design and supervision','',''], ar:['الطوارئ والتصميم والإشراف','','']},
+ include:{hen:'Untick an item to leave it out of every option and see how much it changes the comparison. Pipes, pumps, PRVs and electricity for pumping always stay in.', har:'ألغِ تحديد أي بند لاستبعاده من كل الخيارات ورؤية مدى تأثيره على المقارنة. الأنابيب والمضخات وصمامات تخفيض الضغط وكهرباء الضخ تبقى دائماً.'},
+ flowReverse:{en:['Flow direction','',''], ar:['اتجاه الجريان','',''], hen:'Which way the water flows on your profile image or file. If the source is on the right side of the Google Earth graph, choose right to left; the tool then flips the profile so chainage 0 is the source.', har:'اتجاه جريان الماء في صورة المقطع أو الملف. إذا كان المصدر على الجهة اليمنى من رسم Google Earth فاختر من اليمين إلى اليسار، فتقلب الأداة المقطع لتكون المسافة صفر عند المصدر.'},
+ layout:{en:['Pumps and PRVs layout','',''], ar:['ترتيب المضخات وصمامات تخفيض الضغط','',''], fig:'prv',
+   hen:'"Optimise pumps and PRVs" places pumps where the line must climb and pressure reducing valves where gravity would push the pressure above the pipe class limit, for example in deep wadis after a ridge. It tries every pipe size and class and keeps the cheapest over the analysis period. "Equal lift, pumps only" is the simpler method for lines that rise all the way.',
+   har:'خيار "تحسين المضخات وصمامات تخفيض الضغط" يضع المضخات حيث يجب أن يصعد الخط، ويضع صمامات تخفيض الضغط حيث ترفع الجاذبية الضغط فوق حد فئة الأنبوب، مثل الأودية العميقة بعد قمة جبل. ويجرب كل الأقطار والفئات ويحتفظ بالأرخص على مدى فترة التحليل. أما "رفع متساوٍ، مضخات فقط" فهو الطريقة الأبسط للخطوط الصاعدة على طول المسار.'},
+ startHead:{en:['Source water level above ground','m','At the start of the profile'], ar:['منسوب الماء في المصدر فوق الأرض','m','عند بداية المقطع'], hen:'Height of the water level in the source tank above the ground at chainage 0. A ground tank is about 3 to 5 m; an elevated tank or a pressurised source gives more head and may let water flow by gravity without a pump.', har:'ارتفاع منسوب الماء في خزان المصدر فوق الأرض عند المسافة صفر. الخزان الأرضي نحو 3 إلى 5 m، والخزان المرتفع أو المصدر المضغوط يعطي رفعاً أكبر وقد يسمح بالجريان بالجاذبية دون مضخة.'},
+ pmaxUser:{en:['Highest pressure allowed in the line','bar','0 = only the pipe class limits'], ar:['أعلى ضغط مسموح في الخط','bar','0 = حدود فئات الأنابيب فقط'], hen:'Optional limit from your utility standard, for example 16 bar. Options with pipe classes above this limit are not tried, so the tool adds PRVs instead.', har:'حد اختياري من معايير الجهة لديك، مثل 16 bar. لا تُجرَّب الخيارات ذات فئات الأنابيب الأعلى من هذا الحد، فتضيف الأداة صمامات تخفيض ضغط بدلاً منها.'},
+ prvBase:{en:['PRV station, fixed cost','$',''], ar:['محطة صمام تخفيض الضغط، تكلفة ثابتة','$',''], hen:'Chamber, isolating valves, bypass, strainer and gauges for each PRV station. Total PRV cost = fixed cost + cost per mm × pipe size.', har:'الغرفة وصمامات العزل والممر الجانبي والمصفاة ومقاييس الضغط لكل محطة صمام. التكلفة الكلية = التكلفة الثابتة + التكلفة لكل مم × قطر الأنبوب.'},
+ prvPerMm:{en:['PRV cost per mm of pipe size','$',''], ar:['تكلفة الصمام لكل مم من القطر','$',''], hen:'Part of the PRV cost that grows with pipe size. With 6,000 fixed and 40 per mm, a DN200 PRV station costs about 14,000.', har:'جزء تكلفة الصمام الذي يزيد مع قطر الأنبوب. مع 6,000 ثابتة و40 لكل مم تكلف محطة صمام بقطر DN200 نحو 14,000.'},
  hs:{en:['Total static head','m','Lowest water level at source to delivery level'], ar:['الرفع الاستاتيكي الكلي','m','من أدنى منسوب مياه في المصدر إلى منسوب التسليم'], fig:'static',
    hen:'The vertical distance from the lowest water level you pump from (sump or source tank at its minimum level) to the water level you deliver into (the top water level of the receiving tank). Friction is not included; the model adds it. Example: source minimum water level 691 m and delivery top water level 1,557 m give a static head of 866 m.',
    har:'المسافة الرأسية من أدنى منسوب للمياه التي تضخ منها (البئر الرطب أو خزان المصدر عند أدنى منسوب) إلى منسوب المياه الذي تسلّم إليه (أعلى منسوب في الخزان المستقبِل). لا يشمل الاحتكاك، فالنموذج يضيفه. مثال: أدنى منسوب في المصدر 691 m وأعلى منسوب في خزان التسليم 1,557 m، فيكون الرفع الاستاتيكي 866 m.'},
@@ -790,6 +1007,9 @@ const FL = {
 };
 const OPTS = {
  rpm:{en:[[2950,'2950 rpm (2-pole)'],[1480,'1480 rpm (4-pole)']], ar:[[2950,'2950 rpm (قطبين)'],[1480,'1480 rpm (4 أقطاب)']]},
+ flowReverse:{en:[[0,'Left to right'],[1,'Right to left']], ar:[[0,'من اليسار إلى اليمين'],[1,'من اليمين إلى اليسار']]},
+ stCost:{en:[['detailed','Detailed items'],['lump','Lump sum per station']], ar:[['detailed','بنود تفصيلية'],['lump','مبلغ إجمالي لكل محطة']]},
+ layout:{en:[['auto','Optimise pumps and PRVs'],['equal','Equal lift, pumps only']], ar:[['auto','تحسين المضخات وصمامات تخفيض الضغط'],['equal','رفع متساوٍ، مضخات فقط']]},
  pumpMode:{en:[['auto','Estimate, allow multistage'],['single','Estimate, single stage only'],['fixed','Use my value']], ar:[['auto','تقدير، مع السماح بمتعددة المراحل'],['single','تقدير، مرحلة واحدة فقط'],['fixed','استخدم قيمتي']]}
 };
 
@@ -854,6 +1074,13 @@ function fig(name){
     <path d="M20 18 H120 V48 H215 V75 H305" stroke="var(--bad)" stroke-dasharray="5 4" fill="none"/>
     <rect x="20" y="116" width="100" height="10" fill="var(--rock)"/><rect x="120" y="116" width="95" height="10" fill="var(--pipe)"/><rect x="215" y="116" width="90" height="10" fill="var(--pump)"/>
     <text x="70" y="138" text-anchor="middle">PN40</text><text x="167" y="138" text-anchor="middle">PN25</text><text x="260" y="138" text-anchor="middle">PN16</text>`);
+  if(name==='prv') return svg(150,`
+    <path d="M10 112 L60 70 L95 30 L130 70 L175 128 L215 135 L260 112 L310 96" stroke="var(--rock)" stroke-width="2" fill="none"/>
+    <path d="M14 112 V16 L150 26 V74 L310 88" stroke="var(--ink)" stroke-width="1.8" fill="none"/>
+    <path d="M14 112 l-6 -9 h12 z" fill="var(--ink)"/><text x="18" y="12">${f.ridge}</text>
+    <rect x="144" y="94" width="12" height="12" fill="var(--rock)" stroke="var(--ink)"/><text x="162" y="56">${f.prv}</text>
+    <path d="M150 26 V74" stroke="var(--bad)" stroke-width="2"/>
+    <text x="235" y="148" text-anchor="middle">${f.reduced}</text>`);
   if(name==='valves') return svg(130,`
     <path d="M10 110 L50 92 L58 88 L64 91 L70 86 L110 70 L140 40 L170 60 L200 100 L230 80 L260 55 L310 30" stroke="var(--rock)" stroke-width="2" fill="none"/>
     <path d="M140 30 l-6 -10 h12 z" fill="var(--pipe)"/><text x="140" y="14" text-anchor="middle">${T().av}</text>
@@ -868,19 +1095,25 @@ function lab(k){ const d=FL[k]; if(!d) return ['','','']; const v=(d[lang()]||d.
 function helpText(k){ const d=FL[k]; return d ? (isAr()?d.har:d.hen) : null; }
 function hb(k){ return helpText(k) ? `<button type="button" class="hb" data-help="${k}" aria-expanded="false" aria-controls="hx-${k}" aria-label="${T().help}">?</button>` : ''; }
 function hx(k){ const tx=helpText(k); return tx ? `<div class="hx" id="hx-${k}" hidden>${esc(tx)}${FL[k].fig?fig(FL[k].fig):''}</div>` : ''; }
+const DEF=makeDefaults();
+const KEYGROUP={}; Object.entries(PRICE_GROUPS).forEach(([g,ks])=>ks.forEach(k=>KEYGROUP[k]=g));
+const locked=k=>{ const g=KEYGROUP[k] || (k.startsWith('prices.')?'pipe':null); return g && (S.priceSrc[g]||'default')==='default'; };
+const shown=k=>locked(k)?getP(DEF,k):getP(S,k);
+const missCls=k=>(S.missing||[]).includes(k)?' miss':'';
 function fieldHTML(f){
   const k=f.k, [L,U,N]=lab(f.lk||k), id='in-'+k.replace(/\./g,'-');
-  const v=f.t==='ro'?f.val:getP(S,k);
+  const v=f.t==='ro'?f.val:shown(k); const dis=f.t!=='ro'&&locked(k)?' disabled':'';
   const label=`<span class="lb"><label for="${id}">${L}${U?` <i>${esc(U)}</i>`:''}</label>${hb(f.lk||k)}${(f.note||N)?`<small>${f.note||N}</small>`:''}</span>`;
   let ctl;
-  if(f.t==='ro') ctl=`<span class="ro" id="${id}">${v}</span>`;
+  if(f.t==='ro') ctl=`<span class="ro" id="${id}"><bdi dir="ltr">${v}</bdi></span>`;
   else if(f.t==='sel') ctl=`<select id="${id}" data-k="${k}" data-t="${f.str?'text':'num'}">${f.opts.map(([val,txt])=>`<option value="${val}" ${String(val)===String(v)?'selected':''}>${txt}</option>`).join('')}</select>`;
   else if(f.t==='text') ctl=`<input type="text" id="${id}" data-k="${k}" data-t="text" value="${esc(v??'')}">`;
-  else if(f.t==='chk') return `<div class="chk"><input type="checkbox" id="${id}" data-k="${k}" ${v?'checked':''}><label for="${id}">${L}</label>${hb(k)}</div>${hx(k)}`;
-  else ctl=`<input type="number" id="${id}" data-k="${k}" step="${f.step||'any'}" value="${v}">`;
-  return `<div class="f">${label}${ctl}</div>${hx(f.lk||k)}`;
+  else if(f.t==='chk') return `<div class="chk"><input type="checkbox" id="${id}" data-k="${k}" ${v!==false&&v?'checked':''}><label for="${id}">${L}</label>${hb(k)}</div>${hx(k)}`;
+  else ctl=`<input type="number" id="${id}" data-k="${k}" step="${f.step||'any'}" value="${v}"${dis}>`;
+  return `<div class="f${missCls(k)}">${label}${ctl}</div>${hx(f.lk||k)}`;
 }
 const num=(k,step)=>({k,step,t:'num'});
+function banner(g){ return (S.priceSrc[g]||'default')==='default' ? `<p class="note lockn">${T().pr.banner(T().pr.grp[g])} <button class="btn" data-unlock="${g}">${T().pr.unlock}</button></p>` : ''; }
 function sectionDefs(){
   PROF=prepProfile(S);
   const t=T();
@@ -895,7 +1128,9 @@ function sectionDefs(){
     ]},
     {id:'profile', open:true, custom:'profile'},
     {id:'terrain', open:true, custom:'terrain'},
-    {id:'hyd', fields:[num('vmin',0.05), num('vmax',0.05), num('minorPct',1), num('stationLoss',0.5)]},
+    {id:'hyd', fields:[num('vmin',0.05), num('vmax',0.05), num('hlMax',0.5), num('minorPct',1), num('stationLoss',0.5)]},
+    {id:'prices', custom:'prices'},
+    {id:'include', custom:'include'},
     {id:'classes', custom:'classes'},
     {id:'pumps', fields:[
       {k:'rpm',t:'sel',opts:OPTS.rpm[lang()]}, {k:'pumpMode',t:'sel',str:true,opts:OPTS.pumpMode[lang()]},
@@ -903,8 +1138,8 @@ function sectionDefs(){
       num('tariff',0.001), num('tariffEsc',0.5), num('auxKW',0.5)]},
     {id:'site', custom:'site'},
     {id:'risk', custom:'risk'},
-    {id:'equip', fields:[num('pumpA',10), num('pumpB',0.01), num('msFactor',0.01), num('elecBase',500), num('elecPerKW',5), num('surgeCost',500)]},
-    {id:'fin', fields:[num('period',1), num('discount',0.25), num('contingency',1), num('engineering',1), num('pipeLife',1), num('civilLife',1), {k:'currency',t:'text'}]}
+    {id:'equip', custom:'equip'},
+    {id:'fin', pre:'finance', fields:[num('period',1), num('discount',0.25), num('contingency',1), num('engineering',1), num('pipeLife',1), num('civilLife',1), {k:'currency',t:'text'}]}
   ];
 }
 function valveList(){
@@ -932,13 +1167,37 @@ function customHTML(id){
       <input type="file" id="fileIn" accept=".kml,.kmz,.gpx,.csv,.txt" hidden><input type="file" id="imgIn" accept="image/*" hidden><p class="note bad" id="profMsg" role="status"></p>`;
     if(!P) return `<p class="note">${t.profNone}</p>${btns}`;
     return `<p class="note"><b>${esc(S.profile.name||'')}</b>: ${t.profStat((P.L/1000).toFixed(2),P.gMin.toFixed(0),P.gMax.toFixed(0))}</p>${btns}
+      ${fieldHTML({k:'flowReverse',t:'sel',opts:OPTS.flowReverse[lang()]})}
+      ${fieldHTML({k:'layout',t:'sel',str:true,opts:OPTS.layout[lang()]})}
+      ${S.layout!=='equal' ? fieldHTML(num('startHead',1)) : ''}
       ${fieldHTML(num('extraStatic',1))}
       ${fieldHTML(num('minRun',50))}
-      ${fieldHTML({k:'boosterKm',t:'text'})}
+      ${S.layout==='equal' ? fieldHTML({k:'boosterKm',t:'text'}) : fieldHTML(num('pmaxUser',1))+fieldHTML(num('prvBase',500))+fieldHTML(num('prvPerMm',5))}
       ${fieldHTML(num('extremaMin',1))}
       ${valveList()}
-      ${fieldHTML(num('avCost',100))}
+      ${banner('valves')}${fieldHTML(num('avCost',100))}
       ${fieldHTML(num('woCost',100))}`;
+  }
+  if(id==='prices'){
+    const p=t.pr, lump=S.stCost==='lump';
+    const groups=['pipe','valves',lump?'lump':'station','civil','om','energy','finance'];
+    return `<p class="note">${p.intro}</p>
+      ${fieldHTML({k:'stCost',t:'sel',str:true,opts:OPTS.stCost[lang()]})}
+      ${lump ? banner('lump')+['lsCapex','lsPerKW','lsMEshare','lsOM','lsEff'].map(k=>fieldHTML(num(k,k==='lsCapex'?1000:k==='lsOM'?100:1))).join('') : ''}
+      <div class="tbl-wrap"><table class="mini"><thead><tr><th>${p.srcHead[0]}</th><th>${p.srcHead[1]}</th></tr></thead><tbody>
+      ${groups.map(g=>`<tr><td style="white-space:normal">${p.grp[g]}</td><td><select data-k="priceSrc.${g}" data-t="text" aria-label="${p.grp[g]}">${p.srcOpts.map(([v,l])=>`<option value="${v}" ${(S.priceSrc[g]||'default')===v?'selected':''}>${l}</option>`).join('')}</select></td></tr>`).join('')}
+      </tbody></table></div>
+      <h3 style="margin-top:12px;font-size:14px">${p.xlT}</h3><p class="note">${p.xlNote}</p>
+      <div class="rail-actions"><button class="btn" data-act="tpl">${p.btnTpl}</button><button class="btn primary" data-act="xl">${p.btnImp}</button></div>
+      <input type="file" id="xlIn" accept=".xlsx" hidden><p class="note" id="xlMsg" role="status"></p>
+      ${(S.missing||[]).length?`<p class="note bad">${p.missNote}</p>`:''}`;
+  }
+  if(id==='include'){
+    return `<p class="note">${esc(isAr()?FL.include.har:FL.include.hen)}</p>`+['standby','surge','tank','road','grid','rock','land','valves','aux','renew','resid','markup'].map(k=>fieldHTML({k:'inc.'+k,t:'chk'})).join('');
+  }
+  if(id==='equip'){
+    if(S.stCost==='lump') return `<p class="note">${t.pr.notUsed}</p>`;
+    return banner('station')+['pumpA','pumpB','msFactor','elecBase','elecPerKW','surgeCost'].map(k=>fieldHTML(num(k,k==='pumpA'?10:k.startsWith('pump')||k==='msFactor'?0.01:k==='elecPerKW'?5:500))).join('');
   }
   if(id==='classes'){
     const cls=S.classes, h=t.classHead;
@@ -946,17 +1205,18 @@ function customHTML(id){
       <td><input type="number" step="0.5" data-k="classes.${i}.limit" value="${k.limit}" aria-label="${esc(k.name)} ${h[1]}"></td>
       <td><input type="number" step="1" data-k="classes.${i}.C" value="${k.C}" aria-label="${esc(k.name)} ${h[2]}"></td>
       <td><input type="number" step="0.001" data-k="classes.${i}.idf" value="${k.idf}" aria-label="${esc(k.name)} ${h[3]}"></td></tr>`).join('');
-    const pr=DN_LIST.map(dn=>`<tr><td>${dn}</td>${cls.map(k=>`<td><input type="number" step="0.5" data-k="prices.${dn}.${k.id}" value="${S.prices[dn]?.[k.id]??''}" aria-label="${esc(k.name)} DN${dn}"></td>`).join('')}</tr>`).join('');
+    const lk=(S.priceSrc.pipe||'default')==='default', P0=lk?DEF.prices:S.prices;
+    const pr=DN_LIST.map(dn=>`<tr><td>${dn}</td>${cls.map(k=>`<td><input type="number" step="0.5" data-k="prices.${dn}.${k.id}" value="${P0[dn]?.[k.id]??''}" aria-label="${esc(k.name)} DN${dn}"${lk?' disabled':''} class="${missCls('prices.'+dn+'.'+k.id)}"></td>`).join('')}</tr>`).join('');
     return `<p class="note">${t.classNote}</p>
       <div class="tbl-wrap"><table class="mini"><thead><tr>${h.map(x=>`<th>${x}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>
-      <p class="note">${t.priceNote(c)}</p>
+      <p class="note">${t.priceNote(c)}</p>${banner('pipe')}
       <div class="tbl-wrap"><table class="mini"><thead><tr><th>${t.sizeHead}</th>${cls.map(k=>`<th>${esc(k.name)}</th>`).join('')}</tr></thead><tbody>${pr}</tbody></table></div>
       <button class="btn" id="resetPrices">${t.resetPrices}</button>`;
   }
   if(id==='site'){
     const tv=[1,1.15,1.35,1.6], r=t.siteRows;
-    const row=(k,step,unit)=>`<span>${r[k]}${unit?` <i class="muted">${unit}</i>`:''}</span>${['src','bst'].map(s=>`<input type="number" step="${step}" data-k="site.${s}.${k}" value="${S.site[s][k]}" aria-label="${r[k]} ${t.siteHead[s==='src'?0:1]}">`).join('')}`;
-    return `<p class="note">${t.siteNote} ${hb('site')}</p>${hx('site')}
+    const row=(k,step,unit)=>`<span>${r[k]}${unit?` <i class="muted">${unit}</i>`:''}</span>${['src','bst'].map(s=>{ const kk=`site.${s}.${k}`; return `<input type="number" step="${step}" data-k="${kk}" value="${shown(kk)}" aria-label="${r[k]} ${t.siteHead[s==='src'?0:1]}"${locked(kk)?' disabled':''} class="${missCls(kk)}">`; }).join('')}`;
+    return `${banner('civil')}${S.stCost==='lump'?`<p class="note">${t.pr.lumpSite}</p>`:''}<p class="note">${t.siteNote} ${hb('site')}</p>${hx('site')}
       <div class="site"><span></span><span class="h">${t.siteHead[0]}</span><span class="h">${t.siteHead[1]}</span>
       ${row('civil',1000,c)}
       <span>${r.transport}</span>${['src','bst'].map(s=>`<select data-k="site.${s}.transport" data-t="num" aria-label="${r.transport} ${t.siteHead[s==='src'?0:1]}">${tv.map((v,i)=>`<option value="${v}" ${Number(v)===Number(S.site[s].transport)?'selected':''}>${t.transport[i]}</option>`).join('')}</select>`).join('')}
@@ -969,7 +1229,7 @@ function customHTML(id){
   }
   if(id==='risk'){
     const sl=k=>{ const [L,N]=t.riskRows[k]; return `<div class="risk"><div class="top"><label for="rk-${k}">${L}</label><b id="rv-${k}">${t.riskLv[S.risk[k]]}</b></div><input id="rk-${k}" type="range" min="1" max="5" step="1" data-k="risk.${k}" value="${S.risk[k]}"><small class="muted" style="font-size:11.5px">${N}</small></div>`; };
-    return `<p class="note">${t.riskHelp} ${hb('risk')}</p>${hx('risk')}${sl('remote')}${sl('access')}${sl('corrosion')}
+    return `${banner('om')}<p class="note">${t.riskHelp} ${hb('risk')}</p>${hx('risk')}${sl('remote')}${sl('access')}${sl('corrosion')}
       ${['stationOM','meMaint','pipeMaint','civilMaint','omEsc','meLife','elecLife'].map(k=>fieldHTML(num(k,k==='stationOM'?500:k==='meMaint'?0.25:k==='omEsc'?0.5:k.endsWith('Life')?1:0.05))).join('')}`;
   }
   return '';
@@ -979,7 +1239,7 @@ function renderInputs(){
   const first=!document.querySelector('details.sec');
   document.getElementById('inputs').innerHTML = sectionDefs().map(s=>{
     const isOpen=first ? s.open : open.has(s.id);
-    return `<details class="sec" data-id="${s.id}" ${isOpen?'open':''}><summary>${T().sec[s.id]}</summary><div class="sec-body">${s.custom?customHTML(s.custom):s.fields.map(fieldHTML).join('')}</div></details>`;
+    return `<details class="sec" data-id="${s.id}" ${isOpen?'open':''}><summary>${T().sec[s.id]}</summary><div class="sec-body">${s.pre?banner(s.pre):''}${s.custom?customHTML(s.custom):s.fields.map(fieldHTML).join('')}</div></details>`;
   }).join('');
   if(open.has('valves')){ const v=document.querySelector('details.valves'); if(v) v.open=true; }
 }
@@ -1012,14 +1272,18 @@ function onEdit(e){
     if(tr && tr.fam){ S.families={...tr.fam}; S.layFactor=tr.lay; S.lowPoint=tr.low; if(tr.corrosion) S.risk.corrosion=tr.corrosion; }
     renderInputs();
   } else if((k==='currency' && e.type==='change') || k==='extremaMin'){ if(e.type==='change'||k==='extremaMin') { save(); renderInputs(); const el2=document.getElementById('in-extremaMin'); if(k==='extremaMin'&&el2){ el2.focus(); } } }
-  if(k==='extraStatic' && PROF){ const ro=document.getElementById('in-hs'); if(ro) ro.textContent=(PROF.gs[PROF.M]+v-PROF.gs[0]).toFixed(0); }
+  if(k==='extraStatic' && PROF){ const ro=document.querySelector('#in-hs bdi'); if(ro) ro.textContent=(PROF.gs[PROF.M]+v-PROF.gs[0]).toFixed(0); }
+  if(S.missing && S.missing.includes(k)){ S.missing=S.missing.filter(x=>x!==k); const row=el.closest('.f'); if(row) row.classList.remove('miss'); el.classList.remove('miss'); }
+  if(k.startsWith('priceSrc.')||k==='stCost'){ save(); renderInputs(); }
   if(k==='nmax'||k.startsWith('families')) sel={N:null,DN:null};
+  if(k==='flowReverse'||k==='layout'){ if(k==='flowReverse'&&S.profile) S.profile.off=[]; sel={N:null,DN:null}; save(); renderInputs(); }
   save(); schedule();
 }
 document.addEventListener('input', e=>{ if(e.target.id==='in-extremaMin') return; onEdit(e); });
 document.addEventListener('change', e=>{
   if(e.target.id==='fileIn' && e.target.files[0]) loadFile(e.target.files[0]);
   if(e.target.id==='imgIn' && e.target.files[0]) openTrace(e.target.files[0]);
+  if(e.target.id==='xlIn' && e.target.files[0]) importXlsx(e.target.files[0]);
   if(e.target.id==='in-extremaMin' || e.target.tagName==='SELECT' || e.target.type==='checkbox' || e.target.dataset.k==='currency') onEdit(e);
 });
 document.addEventListener('click', e=>{
@@ -1029,6 +1293,9 @@ document.addEventListener('click', e=>{
   if(e.target.id==='resetAll'){ const l=S.lang; S=makeDefaults(); S.lang=l; sel={N:null,DN:null}; save(); renderInputs(); schedule(); }
   const act=e.target.dataset && e.target.dataset.act;
   if(act==='file') document.getElementById('fileIn').click();
+  if(act==='xl') document.getElementById('xlIn').click();
+  if(act==='tpl') downloadTemplate();
+  if(e.target.dataset && e.target.dataset.unlock){ S.priceSrc[e.target.dataset.unlock]='mine'; save(); renderInputs(); schedule(); return; }
   if(act==='img') document.getElementById('imgIn').click();
   if(act==='pts') openPoints();
   if(act==='clear'){ S.profile=null; sel={N:null,DN:null}; save(); renderInputs(); schedule(); }
@@ -1042,6 +1309,107 @@ document.addEventListener('keydown', e=>{
   const tr=e.target.closest && e.target.closest('tr[data-n]');
   if(tr && (e.key==='Enter'||e.key===' ')){ e.preventDefault(); sel={N:+tr.dataset.n, DN:null}; render(); }
 });
+
+
+// ---------- EXCEL PRICE IMPORT ----------
+const XL_TEMPLATE='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';
+async function downloadTemplate(){
+  const p=T().pr, bin=atob(XL_TEMPLATE), u8=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) u8[i]=bin.charCodeAt(i);
+  const blob=new Blob([u8],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}), name='pumping-optimiser-price-template.xlsx';
+  if(window.claude && typeof window.claude.use==='function'){
+    try{ const dl=await window.claude.use('downloads'); if(dl){ await dl.save({filename:name, data:blob}); return; } }
+    catch(e){ if(e && e.code==='declined') return; const m=document.getElementById('xlMsg'); if(m && e && e.code) { m.textContent=p.dlFail; return; } }
+  }
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },1500);
+}
+async function unzipAll(buf){
+  const dv=new DataView(buf); let eo=-1;
+  for(let i=buf.byteLength-22;i>=Math.max(0,buf.byteLength-65557);i--) if(dv.getUint32(i,true)===0x06054b50){eo=i;break;}
+  if(eo<0) throw new Error('zip');
+  const cnt=dv.getUint16(eo+10,true); let p=dv.getUint32(eo+16,true); const out={};
+  for(let k=0;k<cnt;k++){
+    const method=dv.getUint16(p+10,true), csize=dv.getUint32(p+20,true), nl=dv.getUint16(p+28,true), el=dv.getUint16(p+30,true), cl=dv.getUint16(p+32,true), lo=dv.getUint32(p+42,true);
+    const name=new TextDecoder().decode(new Uint8Array(buf,p+46,nl));
+    const ds=lo+30+dv.getUint16(lo+26,true)+dv.getUint16(lo+28,true); const data=new Uint8Array(buf,ds,csize);
+    if(/\.(xml|rels)$/i.test(name)){
+      out[name] = method===0 ? new TextDecoder().decode(data) : await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text();
+    }
+    p+=46+nl+el+cl;
+  }
+  return out;
+}
+async function readXlsx(buf){
+  const z=await unzipAll(buf), X=s=>new DOMParser().parseFromString(s,'application/xml'), tags=(d,n)=>[...d.getElementsByTagName('*')].filter(e=>e.localName===n);
+  const ss=z['xl/sharedStrings.xml']?tags(X(z['xl/sharedStrings.xml']),'si').map(si=>tags(si,'t').map(t=>t.textContent).join('')):[];
+  const rels={}; if(z['xl/_rels/workbook.xml.rels']) tags(X(z['xl/_rels/workbook.xml.rels']),'Relationship').forEach(r=>rels[r.getAttribute('Id')]=r.getAttribute('Target'));
+  const sheets={};
+  tags(X(z['xl/workbook.xml']),'sheet').forEach(sh=>{
+    const rid=[...sh.attributes].find(a=>a.localName==='id'&&a.prefix)?.value || sh.getAttribute('r:id');
+    let tgt=(rels[rid]||'').replace(/^\/?xl\//,''); const path='xl/'+tgt; if(!z[path]) return;
+    const rows=[];
+    tags(X(z[path]),'c').forEach(c=>{
+      const ref=c.getAttribute('r')||''; const m=ref.match(/^([A-Z]+)(\d+)$/); if(!m) return;
+      const col=m[1].split('').reduce((a,ch)=>a*26+ch.charCodeAt(0)-64,0)-1, row=+m[2]-1, typ=c.getAttribute('t');
+      const vEl=tags(c,'v')[0]; let v=null;
+      if(typ==='s') v=ss[+(vEl?vEl.textContent:-1)]??null;
+      else if(typ==='inlineStr') v=tags(c,'t').map(t=>t.textContent).join('');
+      else if(typ==='str'||typ==='b'||typ==='e') v=vEl?vEl.textContent:null;
+      else v=vEl&&vEl.textContent!==''?parseFloat(vEl.textContent):null;
+      (rows[row]=rows[row]||[])[col]=v;
+    });
+    sheets[sh.getAttribute('name')]=rows;
+  });
+  return sheets;
+}
+const XL_CODES=Object.values(PRICE_GROUPS).flat().filter(k=>k!=='prices');
+async function importXlsx(file){
+  const p=T().pr, msg=document.getElementById('xlMsg');
+  let sheets; try{ sheets=await readXlsx(await file.arrayBuffer()); }catch(e){ if(msg) msg.textContent=p.impErr; return; }
+  const found={}, numv=v=>typeof v==='number'?v:(typeof v==='string'&&v.trim()!==''&&isFinite(+v.replace(/,/g,''))?+v.replace(/,/g,''):null);
+  // Prices sheet: Code column + "Your value" column
+  Object.entries(sheets).forEach(([name,rows])=>{
+    const hi=rows.findIndex(r=>r&&String(r[0]||'').trim().toLowerCase()==='code'); if(hi<0) return;
+    const vc=rows[hi].findIndex(h=>/your value|قيمتك/i.test(String(h||''))); if(vc<0) return;
+    rows.slice(hi+1).forEach(r=>{ if(!r) return; const code=String(r[0]||'').trim(), v=numv(r[vc]); if(code && v!==null) found[code]=v; });
+  });
+  // Pipe prices sheet: header row "DN" then class codes
+  const pipe={}; let pipeSeen=false;
+  Object.entries(sheets).forEach(([name,rows])=>{
+    if(/default/i.test(name)) return;
+    const hi=rows.findIndex(r=>r&&String(r[0]||'').trim().toUpperCase()==='DN'); if(hi<0) return; pipeSeen=true;
+    const cols=rows[hi].map(h=>String(h||'').trim());
+    rows.slice(hi+1).forEach(r=>{ if(!r) return; const dn=numv(r[0]); if(!DN_LIST.includes(dn)) return;
+      cols.forEach((cid,j)=>{ if(j===0||!S.classes.some(c=>c.id===cid)) return; const v=numv(r[j]); if(v!==null) pipe['prices.'+dn+'.'+cid]=v; }); });
+  });
+  const nFound=Object.keys(found).filter(k=>XL_CODES.includes(k)||k.startsWith('limit.')).length+Object.keys(pipe).length;
+  if(!nFound){ if(msg) msg.textContent=p.impNone; return; }
+  // apply
+  const touched=new Set();
+  Object.entries(found).forEach(([k,v])=>{
+    if(k.startsWith('limit.')){ const c=S.classes.find(c=>c.id===k.slice(6)); if(c) c.limit=v; return; }
+    if(!XL_CODES.includes(k)) return; setP(S,k,v); touched.add(KEYGROUP[k]);
+  });
+  if(Object.keys(pipe).length){ touched.add('pipe'); S.prices=JSON.parse(JSON.stringify(DEF.prices)); Object.entries(pipe).forEach(([k,v])=>setP(S,k,v)); }
+  // groups that got values switch to "My values"; their empty cells become the missing list
+  const missing=[];
+  touched.forEach(g=>{ S.priceSrc[g]='mine';
+    if(g==='pipe') DN_LIST.forEach(dn=>S.classes.filter(c=>S.families[c.fam]).forEach(c=>{ const k='prices.'+dn+'.'+c.id; if(!(k in pipe)) missing.push(k); }));
+    else PRICE_GROUPS[g].forEach(k=>{ if(!(k in found)) missing.push(k); }); });
+  save();
+  if(!missing.length){ S.missing=[]; save(); renderInputs(); schedule(); const m2=document.getElementById('xlMsg'); if(m2) m2.textContent=p.impFound(nFound)+' '+p.impDone; return; }
+  const dlg=document.getElementById('dlg');
+  const pipeMiss=missing.filter(k=>k.startsWith('prices.')).length, other=missing.filter(k=>!k.startsWith('prices.'));
+  const names=other.map(k=>lab(k)[0]||k);
+  const list=names.slice(0,14).map(n=>`<li>${esc(n)}</li>`).join('')+(names.length>14?`<li>${p.impMore(names.length-14)}</li>`:'')+(pipeMiss?`<li>${p.impPipe(pipeMiss)}</li>`:'');
+  dlg.innerHTML=`<h2>${p.impT}</h2><p class="note">${p.impFound(nFound)}</p><p class="note">${p.impMiss(missing.length)}</p><ul class="assume">${list}</ul>
+    <p>${p.impAsk}</p><div class="rail-actions"><button class="btn" id="impSelf">${p.impSelf}</button><button class="btn primary" id="impDef">${p.impDef}</button></div>`;
+  dlg.showModal();
+  document.getElementById('impDef').onclick=()=>{ missing.forEach(k=>setP(S,k,JSON.parse(JSON.stringify(getP(DEF,k))))); S.missing=[]; save(); dlg.close(); renderInputs(); schedule(); };
+  document.getElementById('impSelf').onclick=()=>{ S.missing=missing; save(); dlg.close();
+    const secs=new Set(); missing.forEach(k=>{ const g=k.startsWith('prices.')?'pipe':KEYGROUP[k]; secs.add({pipe:'classes',valves:'profile',station:'equip',lump:'prices',civil:'site',om:'risk',energy:'pumps',finance:'fin'}[g]); });
+    renderInputs(); secs.forEach(id=>{ const d=document.querySelector(`details.sec[data-id="${id}"]`); if(d) d.open=true; });
+    const first=document.querySelector('.f.miss, input.miss'); if(first) first.scrollIntoView({block:'center'}); schedule(); };
+}
 
 // ---------- GROUND PROFILE IMPORT ----------
 function profMsg(txt){ const el=document.getElementById('profMsg'); if(el) el.textContent=txt||''; }
@@ -1204,6 +1572,7 @@ function openTrace(file){
 }
 
 // ---------- RESULTS ----------
+let E=null;
 let timer=null; function schedule(){ clearTimeout(timer); timer=setTimeout(render,180); }
 const charts={};
 function css(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
@@ -1216,7 +1585,7 @@ const rng=(a,b,d,u)=>Math.abs(a-b)<0.5*Math.pow(10,-d) ? `${a.toFixed(d)}${u}` :
 function nColors(){ return [css('--pipe'),css('--rock'),css('--pump'),css('--plum'),css('--slate'),css('--bad')]; }
 
 function render(){
-  const t=T(), R=runModel(S), out=document.getElementById('out');
+  const t=T(); E=effInputs(S); const R=runModel(E), out=document.getElementById('out');
   Object.values(charts).forEach(c=>c.destroy()); for(const k in charts) delete charts[k];
   if(!R.overall){
     out.innerHTML=`<div class="hero"><div class="verdict">${t.noneTitle}<span class="sub">${t.noneText}</span></div>
@@ -1224,13 +1593,14 @@ function render(){
     return;
   }
   const best=R.overall;
-  if(sel.N==null || !R.byN[sel.N-1] || !R.byN[sel.N-1].best) sel={N:best.N, DN:null};
-  let cfg=R.byN[sel.N-1].best;
-  if(sel.DN && R.byN[sel.N-1].grid[sel.DN]) cfg=R.byN[sel.N-1].grid[sel.DN]; else sel.DN=null;
+  const byNo=n=>R.byN.find(x=>x.N===n);
+  if(sel.N==null || !byNo(sel.N) || !byNo(sel.N).best) sel={N:best.N, DN:null};
+  let cfg=byNo(sel.N).best;
+  if(sel.DN && byNo(sel.N).grid[sel.DN]) cfg=byNo(sel.N).grid[sel.DN]; else sel.DN=null;
 
   const feas=R.byN.filter(x=>x.best).map(x=>x.best).sort((a,b)=>a.npv-b.npv), second=feas[1];
   const mults=[0.5,0.75,1,1.5,2,3,4], sens=tariffSensitivity(R,mults), winners=sens.map(s=>s.winner);
-  const c=cur(), fx=m=>(S.tariff*m).toFixed(3);
+  const c=cur(), fx=m=>(E.tariff*m).toFixed(3);
   let tarNote='';
   const up=winners.findIndex((w,i)=>mults[i]>1 && w!==best.N && w!=null), lo=winners.findIndex((w,i)=>mults[i]<1 && w!==best.N && w!=null);
   tarNote = up>=0 ? t.tarUp(fx(mults[up]),c,winners[up]) : t.tarHolds(fx(4),c);
@@ -1242,13 +1612,13 @@ function render(){
 
   out.innerHTML=`
   <section class="hero">
-    <div class="verdict">${t.verdict(best.N,best.DN,famName(best.fam))}
+    <div class="verdict">${t.verdict(best.N,best.DN,famName(best.fam),best.nPRV)}
       <span class="sub">${cfg.profile?t.profPrefix:''}${t.lowest(S.period,mc(best.npv),best.lcc.toFixed(3),c)}${diff}${t.eShare(Math.round(best.pvE/best.npv*100))}${tarNote}</span></div>
     ${viewing}
     <div class="profile-box">
       <div class="cap"><h3>${t.profTitle(cfg.N,cfg.DN,famName(cfg.fam))}</h3><span class="muted" style="font-size:12.5px">${classTxt}</span></div>
       <div class="kpis" style="margin-bottom:10px">
-        <div>${k[0]}<b>${rng(cfg.TDHmin,cfg.TDHmax,0,' m')}</b></div>
+        <div>${k[0]}<b>${cfg.N?rng(cfg.TDHmin,cfg.TDHmax,0,' m'):'—'}</b></div>
         <div>${k[1]}<b>${cfg.maxBar.toFixed(1)} bar</b></div>
         <div>${k[2]}<b>${mc(cfg.capex)}</b></div>
         <div>${k[3]}<b>${mc(cfg.energyYr1+cfg.omYr1)}</b></div>
@@ -1265,10 +1635,10 @@ function render(){
       <tbody>${R.byN.map(x=>{ const b=x.best;
         if(!b) return `<tr data-n="${x.N}" tabindex="0"><td>${t.st(x.N)}</td><td class="na" colspan="12">${t.notPossible}${esc(t.reason(x.reason)||'')}</td></tr>`;
         return `<tr data-n="${x.N}" tabindex="0" class="${b===best?'best':''} ${x.N===cfg.N?'sel':''}">
-          <td>${t.st(x.N)}${b===best?`<span class="tag">${t.best}</span>`:''}</td><td>DN${b.DN} ${famShort(b.fam)}</td>
+          <td>${t.st(x.N)}${b.nPRV?' + '+t.prv(b.nPRV):''}${b===best?`<span class="tag">${t.best}</span>`:''}</td><td>DN${b.DN} ${famShort(b.fam)}</td>
           <td>${mc(b.capex)}</td><td>${mc(b.energyYr1+b.omYr1)}</td><td><b>${mc(b.npv)}</b></td><td>${b.lcc.toFixed(3)}</td>
-          <td>${mc(b.nominal)}</td><td>${rng(b.TDHmin,b.TDHmax,0,'')}</td><td>${b.maxBar.toFixed(1)}</td><td>${b.vMax.toFixed(2)}</td>
-          <td>${rng(b.etaMin*100,b.etaMax*100,0,'%')}</td><td>${b.duty}+${b.standby} × ${b.ratingMax} kW</td><td>${b.kWhm3.toFixed(2)}</td></tr>`; }).join('')}
+          <td>${mc(b.nominal)}</td><td>${b.N?rng(b.TDHmin,b.TDHmax,0,''):'—'}</td><td>${b.maxBar.toFixed(1)}</td><td>${b.vMax.toFixed(2)}</td>
+          <td>${b.N?rng(b.etaMin*100,b.etaMax*100,0,'%'):'—'}</td><td>${b.N?`${b.duty}+${b.standby} × ${b.ratingMax} kW`:'—'}</td><td>${b.kWhm3.toFixed(2)}</td></tr>`; }).join('')}
       </tbody></table></div>
   </section>
 
@@ -1276,14 +1646,15 @@ function render(){
     <div class="card"><h3>${ch.money}</h3><p class="muted">${ch.moneyN(S.period)}</p><div class="cv med"><canvas id="cPV"></canvas></div></div>
     <div class="card"><h3>${ch.dn}</h3><p class="muted">${ch.dnN}</p><div class="cv med"><canvas id="cDN"></canvas></div></div>
     <div class="card"><h3>${ch.cum}</h3><p class="muted">${ch.cumN}</p><div class="cv med"><canvas id="cCum"></canvas></div></div>
-    <div class="card"><h3>${ch.tar}</h3><p class="muted">${ch.tarN(S.tariff,c)}</p><div class="cv med"><canvas id="cTar"></canvas></div></div>
+    <div class="card"><h3>${ch.tar}</h3><p class="muted">${ch.tarN(E.tariff,c)}</p><div class="cv med"><canvas id="cTar"></canvas></div></div>
   </section>
 
   <section class="block">
-    <h2>${t.bdTitle(cfg.N,cfg.DN,famName(cfg.fam))}</h2><p class="muted">${t.bdNote(S.contingency,S.engineering)}</p>
+    <h2>${t.bdTitle(cfg.N,cfg.DN,famName(cfg.fam))}</h2><p class="muted">${t.bdNote(E.contingency,E.engineering)}</p>
     <div class="detail">
       <div class="card"><h3>${t.capT}</h3><dl class="kv">
         <dt>${t.cap.pipe}</dt><dd>${money(cfg.cap.pipe)}</dd>
+        ${cfg.cap.prv>0?`<dt>${t.cap.prv}</dt><dd>${money(cfg.cap.prv)}</dd>`:''}
         ${cfg.cap.fit>0?`<dt>${t.cap.fit}</dt><dd>${money(cfg.cap.fit)}</dd>`:''}
         <dt>${t.cap.mech}</dt><dd>${money(cfg.cap.mech)}</dd>
         <dt>${t.cap.elec}</dt><dd>${money(cfg.cap.elec)}</dd>
@@ -1307,27 +1678,42 @@ function render(){
         <dt>${t.pp.hs}</dt><dd>${cfg.hsTot.toFixed(0)} m</dd>
         <dt>${t.pp.hf}</dt><dd>${cfg.hfTot.toFixed(1)} m</dd>
         <dt>${t.pp.v}</dt><dd>${rng(cfg.vMin,cfg.vMax,2,' m/s')}</dd>
+        <dt>${t.pp.hl}</dt><dd>${cfg.hlKm!=null?cfg.hlKm.toFixed(1)+' m/km':'—'}</dd>
         ${cfg.profile?`<dt>${t.pp.valves}</dt><dd>${cfg.nAV} / ${cfg.nWO}</dd>`:''}
         <dt>${t.pp.ren}</dt><dd>${t.pp.every(cfg.meLife.toFixed(0))}</dd></dl></div>
-      <div class="card full"><h3>${t.stT}</h3>
-        <p class="muted">${cfg.profile ? (cfg.manualPos ? t.stManual : t.stAuto) : t.stEqual}</p>
-        <div class="tbl-wrap"><table class="cmp"><thead><tr>${t.stHead.map(h=>`<th>${h}</th>`).join('')}</tr></thead>
-        <tbody>${cfg.stations.map((s,i)=>`<tr><td>${i===0?t.atSource:t.booster(i)}</td><td>${s.xKm.toFixed(2)}</td><td>${s.Hs.toFixed(0)}</td><td>${s.hf.toFixed(1)}</td><td>${s.TDH.toFixed(0)}</td><td>${s.maxBar.toFixed(1)}</td><td>${(s.pump.eta*100).toFixed(1)}%</td><td>${s.pump.stages}</td><td>${s.pump.nq.toFixed(1)}</td><td>${(s.etaM*100).toFixed(1)}%</td><td>${cfg.duty}+${cfg.standby} × ${s.rating} kW</td><td>${s.stationKW.toFixed(0)}</td></tr>`).join('')}</tbody></table></div></div>
+      ${cfg.auto ? ctrlTable(cfg) : stTable(cfg)}
     </div>
   </section>
 
   <section class="block">
     <h2>${t.howT}</h2>
     <ul class="assume">
-      <li>${cfg.profile?t.how.prof:t.how.straight}</li>
+      <li>${cfg.auto?t.how.auto:cfg.profile?t.how.prof:t.how.straight}</li>
       ${cfg.profile && S.profile && S.profile.source==='image' ? `<li>${t.how.img}</li>` : ''}
-      <li>${t.how.hw}</li><li>${t.how.eta}</li><li>${t.how.fixed}</li><li>${t.how.pv(S.discount,S.period)}</li><li>${t.how.price}</li>
+      ${cfg.lump?`<li>${t.how.lump}</li>`:''}<li>${t.how.hw}</li><li>${t.how.eta}</li><li>${t.how.fixed}</li><li>${t.how.pv(E.discount,S.period)}</li><li>${t.how.price}</li>
     </ul>
   </section>`;
   const bb=document.getElementById('backBest'); if(bb) bb.onclick=()=>{ sel={N:null,DN:null}; render(); };
   drawCharts(R,cfg,sens,mults);
 }
 
+function stTable(cfg){ const t=T(); return `<div class="card full"><h3>${t.stT}</h3>
+        <p class="muted">${cfg.profile ? (cfg.manualPos ? t.stManual : t.stAuto) : t.stEqual}</p>
+        <div class="tbl-wrap"><table class="cmp"><thead><tr>${t.stHead.map(h=>`<th>${h}</th>`).join('')}</tr></thead>
+        <tbody>${cfg.stations.map((s,i)=>`<tr><td>${i===0?t.atSource:t.booster(i)}</td><td>${s.xKm.toFixed(2)}</td><td>${s.Hs.toFixed(0)}</td><td>${s.hf.toFixed(1)}</td><td>${s.TDH.toFixed(0)}</td><td>${s.maxBar.toFixed(1)}</td><td>${(s.pump.eta*100).toFixed(1)}%</td><td>${s.pump.stages}</td><td>${s.pump.nq.toFixed(1)}</td><td>${(s.etaM*100).toFixed(1)}%</td><td>${cfg.duty}+${cfg.standby} × ${s.rating} kW</td><td>${s.stationKW.toFixed(0)}</td></tr>`).join('')}</tbody></table></div></div>`; }
+function ctrlTable(cfg){
+  const t=T(); let nb=0, np=0;
+  const items=[...cfg.stations.map(s=>({x:s.xKm, kind:'pump', s})), ...cfg.prvs.map(p=>({x:p.xKm, kind:'prv', p}))].sort((a,b)=>a.x-b.x);
+  let cav=false;
+  const rows=items.map(it=>{
+    if(it.kind==='pump'){ const s=it.s; const name = s.src ? t.itemPump : t.itemBooster(++nb);
+      return `<tr><td>${name}</td><td>${s.xKm.toFixed(2)}</td><td>${s.zg.toFixed(0)}</td><td>${s.Pin.toFixed(0)}</td><td>${s.Pd.toFixed(0)}</td><td>+${s.Hs.toFixed(0)}</td><td>${(s.pump.eta*100).toFixed(1)}%</td><td>${cfg.duty}+${cfg.standby} × ${s.rating} kW</td></tr>`; }
+    const p=it.p, warn=p.Pout>0 && p.Pin/p.Pout>3; if(warn) cav=true;
+    return `<tr><td>${t.itemPrv(++np)}${warn?' ⚠':''}</td><td>${p.xKm.toFixed(2)}</td><td>${p.zg.toFixed(0)}</td><td>${p.Pin.toFixed(0)}</td><td>${p.Pout.toFixed(0)}</td><td>−${p.drop.toFixed(0)}</td><td>—</td><td>—</td></tr>`; }).join('');
+  return `<div class="card full"><h3>${t.ctrlT}</h3><p class="muted">${t.ctrlNote} ${cfg.cap_bar?t.capNote(cfg.cap_bar):''}</p>
+    ${items.length?`<div class="tbl-wrap"><table class="cmp"><thead><tr>${t.ctrlHead.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>`:''}
+    ${cav?`<p class="note">${t.cavWarn}</p>`:''}</div>`;
+}
 function baseOpts(xTitle,yTitle){
   const ink=css('--ink-2'), line=css('--line'), fam='Archivo, "IBM Plex Sans Arabic", system-ui, sans-serif';
   return {responsive:true, maintainAspectRatio:false, animation:false, interaction:{mode:'nearest', intersect:false},
@@ -1360,14 +1746,27 @@ function drawCharts(R,cfg,sens,mults){
   const po=baseOpts(ch.dist, prof?ch.lvlProf:ch.lvl);
   po.scales.x.type='linear'; po.scales.x.min=-Lk*0.015; po.scales.x.max=Lk;
   po.scales.y.min=prof?Math.floor((prof.gMin-0.05*(prof.gMax-prof.gMin+1))/10)*10:0;
-  po.plugins.tooltip.callbacks={label:x=>ch.tip(x.dataset.label,x.parsed.y.toFixed(0),x.parsed.x.toFixed(2))};
+  const hglPts=cfg.hgl.map(([x,y])=>[x/1000,y]);
+  const hglAt=xk=>{ let v=hglPts[0][1]; for(let i=0;i<hglPts.length-1;i++){ const [a,ya]=hglPts[i],[b,yb]=hglPts[i+1]; if(xk>=a && xk<=b){ v = b>a ? ya+(yb-ya)*(xk-a)/(b-a) : yb; } } if(xk>hglPts[hglPts.length-1][0]) v=hglPts[hglPts.length-1][1]; return v; };
+  const pipeAt=xm=>{ const p=parts.find(p=>xm>=p.x0-1e-6 && xm<=p.x1+1e-6); return p?`DN${cfg.DN} ${p.cls.name}`:''; };
+  po.interaction={mode:'nearest', axis:'x', intersect:false};
+  po.plugins.tooltip.filter=(item,i)=>i===0;
+  po.plugins.tooltip.displayColors=false;
+  if(!Chart.Tooltip.positioners.cursor) Chart.Tooltip.positioners.cursor=function(items,pos){ return pos; };
+  po.plugins.tooltip.position='cursor';
+  const xAt=ch2=>Math.min(Lk,Math.max(0,ch2.$xk??0));
+  po.plugins.tooltip.callbacks={
+    title:items=>items.length?t.tip.dist(xAt(items[0].chart).toFixed(2)):'',
+    label:item=>{ const xk=xAt(item.chart), g=groundAt(xk*1000), p=hglAt(xk)-g;
+      return [t.tip.p(p.toFixed(0),(p*0.0981).toFixed(1)), t.tip.pipe(pipeAt(xk*1000), g.toFixed(0))]; }};
   po.onClick=(ev,els,chart)=>{ const hit=chart.getElementsAtEventForMode(ev,'nearest',{intersect:true},false).find(h=>chart.data.datasets[h.datasetIndex].valve);
     if(!hit) return; const pt=chart.data.datasets[hit.datasetIndex].data[hit.index]; toggleValve(pt.x*1000); save(); setTimeout(()=>{ renderInputs(); render(); },0); };
   po.onHover=(ev,els,chart)=>{ const hit=chart.getElementsAtEventForMode(ev,'nearest',{intersect:true},false).some(h=>chart.data.datasets[h.datasetIndex].valve); ev.native.target.style.cursor=hit?'pointer':'default'; };
-  charts.p=new Chart(document.getElementById('cProfile'),{type:'line',data:{datasets:[
-    {label:ch.hgl,data:cfg.secs.flatMap(s=>s.hgl.map(([x,y])=>({x:x/1000,y}))),borderColor:css('--ink'),borderWidth:2,pointRadius:0,order:1},
+  charts.p=new Chart(document.getElementById('cProfile'),{type:'line',plugins:[{id:'xpos',beforeEvent(chart,args){ const e=args.event; if(e && e.x!=null) chart.$xk=chart.scales.x.getValueForPixel(e.x); }}],data:{datasets:[
+    {label:ch.hgl,data:cfg.hgl.map(([x,y])=>({x:x/1000,y})),borderColor:css('--ink'),borderWidth:2,pointRadius:0,order:1},
     ...clsSets,
-    {label:ch.station,type:'scatter',data:cfg.secs.map(s=>({x:s.x0/1000,y:s.WL})),pointStyle:'rectRot',pointRadius:8,backgroundColor:css('--ink'),borderColor:css('--surface'),borderWidth:2,order:0},
+    ...(cfg.markers.pumps.length?[{label:ch.station,type:'scatter',data:cfg.markers.pumps,pointStyle:'rectRot',pointRadius:8,backgroundColor:css('--ink'),borderColor:css('--surface'),borderWidth:2,order:0}]:[]),
+    ...(cfg.markers.prvs.length?[{label:ch.prvM,type:'scatter',data:cfg.markers.prvs,pointStyle:'rect',pointRadius:7,backgroundColor:css('--rock'),borderColor:css('--ink'),borderWidth:1.5,order:0}]:[]),
     ...vset,
     {label:ch.ground,data:groundSeg(0,Lk*1000),borderColor:css('--rock'),borderWidth:1,backgroundColor:css('--rock-soft'),fill:'start',pointRadius:0,order:5}
   ]},options:po});
@@ -1382,7 +1781,7 @@ function drawCharts(R,cfg,sens,mults){
     {label:sn[4],data:pick(b=>-b.pvResid),backgroundColor:css('--slate')}]},options:pvo});
   // DN
   const dno=baseOpts(ch.dnAxis,ch.costAxis(c)); dno.scales.y.ticks.callback=kfmt;
-  dno.plugins.tooltip.callbacks={label:x=>{ const g=R.byN[x.datasetIndex].grid[DN_LIST[x.dataIndex]]; return g?`${t.st(g.N)}, ${famName(g.fam)}: ${mc(g.npv)}`:''; }};
+  dno.plugins.tooltip.callbacks={label:x=>{ const g=R.byN[x.datasetIndex].grid[DN_LIST[x.dataIndex]]; return g?`${t.st(g.N)}${g.nPRV?' + '+t.prv(g.nPRV):''}, ${famName(g.fam)}: ${mc(g.npv)}`:''; }};
   dno.interaction={mode:'nearest',intersect:true};
   dno.onClick=(ev,els)=>{ if(!els.length) return; const e=els[0]; const g=R.byN[e.datasetIndex].grid[DN_LIST[e.index]]; if(g){ sel={N:g.N,DN:g.DN}; setTimeout(()=>{ render(); window.scrollTo({top:0}); },0); } };
   charts.dn=new Chart(document.getElementById('cDN'),{type:'line',data:{labels:DN_LIST.map(String),datasets:R.byN.map((x,i)=>({
@@ -1391,10 +1790,10 @@ function drawCharts(R,cfg,sens,mults){
   const T2=Math.round(S.period);
   const co=baseOpts(ch.year,ch.cumAxis(c)); co.scales.y.ticks.callback=kfmt; co.plugins.tooltip.callbacks={label:x=>`${x.dataset.label}: ${mc(x.parsed.y)}`};
   charts.cum=new Chart(document.getElementById('cCum'),{type:'line',data:{labels:[...Array(T2+1).keys()],datasets:R.byN.filter(x=>x.best).map(x=>({
-    label:t.st(x.N),data:x.best.cum,borderColor:cols[(x.N-1)%6],backgroundColor:cols[(x.N-1)%6],pointRadius:0,borderWidth:2}))},options:co});
+    label:t.st(x.N),data:x.best.cum,borderColor:cols[R.byN.indexOf(x)%6],backgroundColor:cols[R.byN.indexOf(x)%6],pointRadius:0,borderWidth:2}))},options:co});
   // Tariff
   const to=baseOpts(ch.tarAxis(c),ch.costAxis(c)); to.scales.y.ticks.callback=kfmt; to.plugins.tooltip.callbacks={label:x=>`${x.dataset.label}: ${mc(x.parsed.y)}`};
-  charts.tar=new Chart(document.getElementById('cTar'),{type:'line',data:{labels:mults.map(m=>(S.tariff*m).toFixed(3)),datasets:R.byN.map((x,i)=>({
+  charts.tar=new Chart(document.getElementById('cTar'),{type:'line',data:{labels:mults.map(m=>(E.tariff*m).toFixed(3)),datasets:R.byN.map((x,i)=>({
     label:t.st(x.N),data:sens.map(s=>s.perN[i]),borderColor:cols[i%6],backgroundColor:cols[i%6],pointRadius:3,borderWidth:2,spanGaps:false}))},options:to});
 }
 
